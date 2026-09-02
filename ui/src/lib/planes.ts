@@ -1,4 +1,4 @@
-import { formatWhen, parseActionList, shortHash } from "./format";
+import { formatWhen, fromDatetimeLocalOrZero, parseActionList, shortHash } from "./format";
 
 export type OsPlane = "unassigned" | "assigned";
 
@@ -80,16 +80,17 @@ export function grantLines(draft: GrantDraft): string[] {
     draft.maxValuePerDay.trim() && Number(draft.maxValuePerDay) > 0
       ? `, ${draft.maxValuePerDay} ETH / day`
       : ", no daily cap";
-  let until = "an unset expiry";
-  try {
-    until = formatWhen(Math.floor(new Date(draft.validUntil).getTime() / 1000));
-  } catch {
-    /* keep fallback */
-  }
+  const until = formatWhen(fromDatetimeLocalOrZero(draft.validUntil));
   const recipient = draft.allowedContracts.trim().split(/[\s,]+/).filter(Boolean)[0];
+  const recipientLabel =
+    recipient && /^0x[0-9a-fA-F]{40}$/.test(recipient)
+      ? `only to ${shortHash(recipient, 4, 4)}`
+      : recipient
+        ? "recipient allowlist is not a 20-byte address"
+        : "no recipient allowlisted yet";
   return [
     `${action}${extra} ≤ ${draft.maxValuePerTx || "0"} ETH per tx${day}`,
-    recipient ? `only to ${shortHash(recipient, 4, 4)}` : "no recipient allowlisted yet",
+    recipientLabel,
     `until ${until}`,
     `while mock risk ≤ ${draft.minVerificationScore || "0"}`,
   ];

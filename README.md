@@ -17,7 +17,7 @@ test/BoundWallet.t.sol
 script/Deploy.s.sol
 script/deploy-anvil.sh
 ui/          ← Vite + React + viem permission desk
-agent-os/TRACK-A-MCP-HUB.md  ← Agent OS camera fallback (assign→act→revoke)
+agent-os/TRACK-A-MCP-HUB.md  ← Agent OS camera fallback (assign→bind→act→revoke)
 TRUST.md     ← Track A trust: mock 8126, entropy stub, MCP vs chain, Anvil, no ERC-8004
 README.md
 ```

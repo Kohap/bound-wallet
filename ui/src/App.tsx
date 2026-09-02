@@ -29,10 +29,13 @@ import {
   formatEth,
   formatWhen,
   fromDatetimeLocal,
+  fromDatetimeLocalOrZero,
   parseActionList,
   parseAddressList,
+  parseAddressListStrict,
   policyLabel,
   riskBadge,
+  safeAddress,
   shortHash,
   toDatetimeLocal,
 } from "./lib/format";
@@ -179,10 +182,28 @@ export default function App() {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw) as { bound?: BoundPolicy; contracts?: Contracts };
-      if (parsed.bound?.policyHash) setBound(parsed.bound);
+      if (
+        parsed.bound?.policyHash &&
+        typeof parsed.bound.policyHash === "string" &&
+        /^0x[0-9a-fA-F]{64}$/.test(parsed.bound.policyHash)
+      ) {
+        setBound(parsed.bound);
+      }
       const seededNow = envContracts();
-      if (parsed.contracts?.wallet && !seededNow.wallet) {
-        setContracts(parsed.contracts);
+      if (
+        parsed.contracts?.wallet &&
+        parsed.contracts.oracle &&
+        parsed.contracts.token &&
+        !seededNow.wallet &&
+        isAddress(parsed.contracts.wallet) &&
+        isAddress(parsed.contracts.oracle) &&
+        isAddress(parsed.contracts.token)
+      ) {
+        setContracts({
+          wallet: getAddress(parsed.contracts.wallet),
+          oracle: getAddress(parsed.contracts.oracle),
+          token: getAddress(parsed.contracts.token),
+        });
         setWalletInput(parsed.contracts.wallet);
         setOracleInput(parsed.contracts.oracle);
         setTokenInput(parsed.contracts.token);
@@ -445,8 +466,8 @@ export default function App() {
     setFlash(null);
     try {
       const actions = parseActionList(draft.allowedActions);
-      const allowed = parseAddressList(draft.allowedContracts).map(getAddress);
-      const blocked = parseAddressList(draft.blockedContracts).map(getAddress);
+      const allowed = parseAddressListStrict(draft.allowedContracts);
+      const blocked = parseAddressListStrict(draft.blockedContracts);
       if (actions.length === 0) throw new Error("Add at least one allowed action, for example transfer.");
       if (allowed.length === 0) throw new Error("Add at least one allowed target (the recipient).");
       if (!isAddress(draft.agent)) throw new Error("Agent address is not valid.");
@@ -656,12 +677,7 @@ export default function App() {
     }
   }
 
-  let previewValidUntil = 0;
-  try {
-    previewValidUntil = bound ? fromDatetimeLocal(bound.validUntil) : 0;
-  } catch {
-    previewValidUntil = 0;
-  }
+  let previewValidUntil = bound ? fromDatetimeLocalOrZero(bound.validUntil) : 0;
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 pb-16">
@@ -701,7 +717,7 @@ export default function App() {
         policyHash={bound?.policyHash}
         draft={draft}
         owner={OWNER_ADDRESS}
-        agent={getAddress(isAddress(draft.agent) ? draft.agent : AGENT_ADDRESS)}
+        agent={safeAddress(draft.agent, AGENT_ADDRESS)}
         canBind={Boolean(contracts) && currentChainPlane !== "active"}
         busy={busy}
         onBind={() => void registerPolicy()}
@@ -1116,7 +1132,7 @@ validUntil ${previewValidUntil}`}
                   return (
                     <tr key={row.entryId} className="border-t border-rule/80">
                       <td className="py-3 pr-3 font-mono">{row.sequence.toString()}</td>
-                      <td className="py-3 pr-3">{actionInEnglish(row.action)}</td>
+                      <td className="py-3 pr-3 font-mono">{row.action}</td>
                       <td className="py-3 pr-3 font-mono text-xs">{shortHash(row.target, 4, 4)}</td>
                       <td className="py-3 pr-3">{formatEth(row.value)}</td>
                       <td className="py-3 pr-3 font-mono text-xs">{shortHash(row.policyHash)}</td>
@@ -1181,7 +1197,7 @@ function PolicySeal({
   const hashMismatch = Boolean(bound && !chain);
   const status = chain ? (chain.isActive ? "Active" : "Revoked") : "getPolicy empty";
   const capTx = chain ? formatEth(chain.maxValuePerTx) : `${bound.maxValuePerTx} ETH (local only)`;
-  const expiry = chain ? formatWhen(chain.validUntil) : formatWhen(fromDatetimeLocal(bound.validUntil));
+  const expiry = chain ? formatWhen(chain.validUntil) : formatWhen(fromDatetimeLocalOrZero(bound.validUntil));
   const allowed = parseAddressList(bound.allowedContracts);
   const tokenListed =
     Boolean(tokenAddress) &&
@@ -1281,16 +1297,18 @@ function Row({ k, v }: { k: string; v: string }) {
 
 function CopyButton({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const t = window.setTimeout(() => setCopied(false), 1200);
+    return () => window.clearTimeout(t);
+  }, [copied]);
   return (
     <button
       type="button"
       className="btn btn-ghost mt-2 px-3 py-1 text-xs"
       onClick={() => {
         void navigator.clipboard.writeText(value).then(
-          () => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1200);
-          },
+          () => setCopied(true),
           () => undefined,
         );
       }}

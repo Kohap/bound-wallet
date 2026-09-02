@@ -53,8 +53,27 @@ export function DualPlaneBoard({
 
   return (
     <section className="mb-6 space-y-4">
+      <nav
+        aria-label="Assign, bind, act, revoke"
+        className="flex flex-wrap items-center gap-2 text-[11px] tracking-[0.16em] text-mute uppercase"
+      >
+        <span className={os === "assigned" ? "text-ok" : ""}>1 Assign</span>
+        <span aria-hidden="true">→</span>
+        <span
+          className={
+            chain === "active" ? "text-ok" : chain === "revoked" ? "text-bad" : ""
+          }
+        >
+          2 Bind
+        </span>
+        <span aria-hidden="true">→</span>
+        <span>3 Act</span>
+        <span aria-hidden="true">→</span>
+        <span className={chain === "revoked" ? "text-bad" : ""}>4 Revoke</span>
+      </nav>
+
       <div className="grid gap-4 md:grid-cols-2">
-        <article className="card">
+        <article className="plane-card" data-state={os === "assigned" ? "live" : "idle"}>
           <p className="text-xs tracking-[0.18em] text-copper uppercase">Agent OS · off-chain</p>
           <div className="mt-2 flex items-center justify-between gap-3">
             <h2 className="font-serif text-2xl text-cream">Assign</h2>
@@ -74,6 +93,7 @@ export function DualPlaneBoard({
               type="button"
               className="btn btn-copper"
               disabled={os === "assigned"}
+              aria-pressed={os === "assigned"}
               onClick={() => onOs("assigned")}
             >
               Mark assigned
@@ -82,6 +102,7 @@ export function DualPlaneBoard({
               type="button"
               className="btn btn-ghost"
               disabled={os === "unassigned"}
+              aria-pressed={os === "unassigned"}
               onClick={() => onOs("unassigned")}
             >
               Mark unassigned
@@ -93,7 +114,10 @@ export function DualPlaneBoard({
           </p>
         </article>
 
-        <article className="card">
+        <article
+          className="plane-card"
+          data-state={chain === "active" ? "live" : chain === "revoked" ? "revoked" : "idle"}
+        >
           <p className="text-xs tracking-[0.18em] text-copper uppercase">Bound Wallet · on-chain</p>
           <div className="mt-2 flex items-center justify-between gap-3">
             <h2 className="font-serif text-2xl text-cream">Bind</h2>
