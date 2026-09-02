@@ -19,6 +19,9 @@ contract BoundWallet is IAIAgentAuthenticatedWallet {
     error ValueExceedsLimit(uint256 value, uint256 maxValue);
     error InvalidSignature(address recovered, address expected);
     error PolicyViolation(bytes32 policyHash, string reason);
+    error EntropyVerificationFailed(bytes32 entryId);
+
+    event EntropyRevealed(bytes32 indexed entryId, bytes32 secret);
 
     /// @dev IERC20.transfer(address,uint256)
     bytes4 private constant _TRANSFER_SELECTOR = 0xa9059cbb;
@@ -68,6 +71,8 @@ contract BoundWallet is IAIAgentAuthenticatedWallet {
     mapping(bytes32 => mapping(uint256 => bool)) public nonceUsed;
     mapping(bytes32 => mapping(uint256 => uint256)) public spentOnDay;
     mapping(bytes32 => AuditEntry) private _auditEntries;
+    mapping(bytes32 => bool) public entropyRevealed;
+    bytes32[] private _policyHashes;
 
     constructor(address riskOracle_) {
         if (riskOracle_ == address(0)) revert PolicyViolation(bytes32(0), "oracle required");
@@ -140,6 +145,7 @@ contract BoundWallet is IAIAgentAuthenticatedWallet {
         }
 
         emit PolicyRegistered(policyHash, msg.sender, agent, validUntil);
+        _policyHashes.push(policyHash);
     }
 
     /// @inheritdoc IAIAgentAuthenticatedWallet
@@ -239,6 +245,42 @@ contract BoundWallet is IAIAgentAuthenticatedWallet {
         if (!policy.isActive) revert PolicyViolation(policyHash, "policy inactive");
         policy.isActive = false;
         emit PolicyRevoked(policyHash, reason);
+    }
+
+    /// @notice Owner containment: deactivate every active policyHash in one transaction.
+    /// @dev Bound Wallet extension — not part of ERC-8196. Safe-style panic. Agent OS is untouched.
+    function revokeAll(string calldata reason) external returns (uint256 revoked) {
+        if (msg.sender != owner) revert PolicyViolation(bytes32(0), "not owner");
+        uint256 n = _policyHashes.length;
+        for (uint256 i; i < n; ++i) {
+            bytes32 h = _policyHashes[i];
+            Policy storage policy = _policies[h];
+            if (policy.exists && policy.isActive) {
+                policy.isActive = false;
+                emit PolicyRevoked(h, reason);
+                unchecked {
+                    ++revoked;
+                }
+            }
+        }
+        if (revoked == 0) revert PolicyViolation(bytes32(0), "no active policies");
+    }
+
+    /// @notice Reveal the preimage of an audit entry's entropyCommitment.
+    /// @dev Audit check only. Does not mitigate host manipulation of the agent runtime.
+    function revealEntropy(bytes32 entryId, bytes32 secret) external {
+        AuditEntry storage entry = _auditEntries[entryId];
+        if (entry.sequence == 0) revert PolicyViolation(entryId, "audit not found");
+        if (entropyRevealed[entryId]) revert PolicyViolation(entryId, "already revealed");
+        if (keccak256(abi.encodePacked(secret)) != entry.entropyCommitment) {
+            revert EntropyVerificationFailed(entryId);
+        }
+        entropyRevealed[entryId] = true;
+        emit EntropyRevealed(entryId, secret);
+    }
+
+    function policyHashAt(uint256 index) external view returns (bytes32) {
+        return _policyHashes[index];
     }
 
     /// @inheritdoc IAIAgentAuthenticatedWallet

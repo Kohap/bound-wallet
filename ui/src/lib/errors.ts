@@ -55,6 +55,10 @@ export function explainRevert(err: unknown): string {
     return plainViolation(reason);
   }
 
+  if (name === "EntropyVerificationFailed") {
+    return "The revealed secret does not match this audit entry’s entropy commitment.";
+  }
+
   if (revert.reason) return revert.reason;
   return name ? `The wallet rejected this action (${name}).` : "The wallet rejected this action.";
 }
@@ -87,6 +91,12 @@ function plainViolation(reason: string): string {
       return "Calldata is not a standard ERC-20 transfer or transferFrom, so the wallet cannot meter it.";
     case "recipient not allowlisted":
       return "The ERC-20 recipient is not on the allowed list for this policy.";
+    case "no active policies":
+      return "There is no active policyHash to revoke.";
+    case "audit not found":
+      return "No audit entry exists for that id.";
+    case "already revealed":
+      return "That entropy commitment has already been revealed.";
     default:
       return `The policy blocked this action (${reason}).`;
   }

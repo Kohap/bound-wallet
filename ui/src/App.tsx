@@ -4,15 +4,18 @@ import {
   type Hex,
   createPublicClient,
   createWalletClient,
+  encodeFunctionData,
   getAddress,
   http,
   isAddress,
+  keccak256,
   parseEther,
   parseEventLogs,
+  toHex,
   zeroAddress,
 } from "viem";
 import { foundry } from "viem/chains";
-import { agentActionTypes, boundWalletAbi, eip712Domain, mockRiskOracleAbi } from "./lib/abi";
+import { agentActionTypes, boundWalletAbi, eip712Domain, mockErc20Abi, mockRiskOracleAbi } from "./lib/abi";
 import {
   AGENT_ACCOUNT,
   AGENT_ADDRESS,
@@ -39,7 +42,7 @@ import {
   shortHash,
   toDatetimeLocal,
 } from "./lib/format";
-import { OS_STORAGE_KEY, chainPlane, type OsPlane } from "./lib/planes";
+import { OS_STORAGE_KEY, applyGrantTemplate, chainPlane, type GrantTemplateId, type OsPlane } from "./lib/planes";
 import { DualPlaneBoard } from "./DualPlane";
 
 type Contracts = {
@@ -80,9 +83,11 @@ type ActivityRow = {
   action: string;
   target: Address;
   value: bigint;
+  amountLabel: string;
   previousHash: Hex;
   entryId: Hex;
   policyHash: Hex;
+  entropyRevealed: boolean;
 };
 
 type Flash = { tone: "ok" | "bad" | "mute"; text: string } | null;
@@ -147,6 +152,7 @@ export default function App() {
   const [flash, setFlash] = useState<Flash>(null);
   const [revokeReason, setRevokeReason] = useState("Owner containment — stop this agent now");
   const [vaultEth, setVaultEth] = useState<bigint>(0n);
+  const [vaultToken, setVaultToken] = useState<bigint>(0n);
   const [spentToday, setSpentToday] = useState<bigint>(0n);
   const [chainScore, setChainScore] = useState(5);
   const [scoreSet, setScoreSet] = useState(true);
@@ -176,6 +182,10 @@ export default function App() {
   const [target, setTarget] = useState<string>(RECIPIENT_ADDRESS);
   const [amount, setAmount] = useState("0.1");
   const [nonce, setNonce] = useState("1");
+  const [asset, setAsset] = useState<"eth" | "mock">("eth");
+  const [pendingEntropy, setPendingEntropy] = useState<{ secret: Hex; commitment: Hex; entryId: Hex } | null>(
+    null,
+  );
 
   const loadSaved = useCallback(() => {
     try {
@@ -252,8 +262,14 @@ export default function App() {
     if (!contracts) return;
     const client = publicClient();
     try {
-      const [bal, has, score, block, registered] = await Promise.all([
+      const [bal, tokenBal, has, score, block, registered] = await Promise.all([
         client.getBalance({ address: contracts.wallet }),
+        client.readContract({
+          address: contracts.token,
+          abi: mockErc20Abi,
+          functionName: "balanceOf",
+          args: [contracts.wallet],
+        }),
         client.readContract({
           address: contracts.oracle,
           abi: mockRiskOracleAbi,
@@ -275,6 +291,7 @@ export default function App() {
         }),
       ]);
       setVaultEth(bal);
+      setVaultToken(tokenBal);
       setScoreSet(Boolean(has));
       setChainScore(Number(score));
 
@@ -326,38 +343,66 @@ export default function App() {
     if (!contracts) return;
     const client = publicClient();
     try {
-      const executed = await client.getContractEvents({
-        address: contracts.wallet,
-        abi: boundWalletAbi,
-        eventName: "ActionExecuted",
-        fromBlock: 0n,
-      });
-      const logged = await client.getContractEvents({
-        address: contracts.wallet,
-        abi: boundWalletAbi,
-        eventName: "AuditEntryLogged",
-        fromBlock: 0n,
-      });
+      const [executed, logged, transfers] = await Promise.all([
+        client.getContractEvents({
+          address: contracts.wallet,
+          abi: boundWalletAbi,
+          eventName: "ActionExecuted",
+          fromBlock: 0n,
+        }),
+        client.getContractEvents({
+          address: contracts.wallet,
+          abi: boundWalletAbi,
+          eventName: "AuditEntryLogged",
+          fromBlock: 0n,
+        }),
+        client.getContractEvents({
+          address: contracts.token,
+          abi: mockErc20Abi,
+          eventName: "Transfer",
+          fromBlock: 0n,
+        }),
+      ]);
       const byId = new Map(logged.map((l) => [l.args.entryId, l]));
+      const tokenByTx = new Map<string, bigint>();
+      for (const t of transfers) {
+        if (t.args.from?.toLowerCase() !== contracts.wallet.toLowerCase()) continue;
+        const key = t.transactionHash;
+        tokenByTx.set(key, (tokenByTx.get(key) ?? 0n) + (t.args.value ?? 0n));
+      }
       const rows: ActivityRow[] = [];
       for (const ev of executed) {
         const entryId = ev.args.auditEntryId;
         if (!entryId) continue;
-        const audit = await client.readContract({
-          address: contracts.wallet,
-          abi: boundWalletAbi,
-          functionName: "getAuditEntry",
-          args: [entryId],
-        });
+        const [audit, revealed] = await Promise.all([
+          client.readContract({
+            address: contracts.wallet,
+            abi: boundWalletAbi,
+            functionName: "getAuditEntry",
+            args: [entryId],
+          }),
+          client.readContract({
+            address: contracts.wallet,
+            abi: boundWalletAbi,
+            functionName: "entropyRevealed",
+            args: [entryId],
+          }),
+        ]);
         const loggedEv = byId.get(entryId);
+        const value = ev.args.value ?? 0n;
+        const tokenAmt = tokenByTx.get(ev.transactionHash);
+        const amountLabel =
+          tokenAmt && tokenAmt > 0n ? formatEth(tokenAmt).replace(" ETH", " MOCK") : formatEth(value);
         rows.push({
           sequence: audit[2],
           action: loggedEv?.args.actionType ?? "action",
           target: ev.args.target as Address,
-          value: ev.args.value ?? 0n,
+          value,
+          amountLabel,
           previousHash: audit[0],
           entryId,
           policyHash: ev.args.policyHash as Hex,
+          entropyRevealed: Boolean(revealed),
         });
       }
       rows.sort((a, b) => Number(a.sequence - b.sequence));
@@ -419,18 +464,34 @@ export default function App() {
     try {
       const value = parseEther(amount || "0");
       const cap = focusedChain?.maxValuePerTx ?? (bound ? parseEther(bound.maxValuePerTx || "0") : 0n);
+      const unit = asset === "mock" ? "MOCK" : "ETH";
       if (bound && value > cap) {
         warnings.push(
-          `Amount ${amount} ETH is over the per-transaction cap of ${formatEth(cap)}. The wallet will reject it.`,
+          `Amount ${amount} ${unit} is over the per-transaction cap of ${formatEth(cap)}. The wallet will reject it.`,
         );
       }
       if (bound && remainingWei !== null && value > remainingWei) {
         warnings.push(
-          `Amount ${amount} ETH is more than the remaining daily allowance (${formatEth(remainingWei)}).`,
+          `Amount ${amount} ${unit} is more than the remaining daily allowance (${formatEth(remainingWei)}).`,
         );
       }
     } catch {
-      if (amount.trim()) warnings.push("Enter a valid ETH amount.");
+      if (amount.trim()) warnings.push("Enter a valid amount.");
+    }
+    if (asset === "mock") {
+      if (!contracts?.token) {
+        warnings.push("Load the MockERC20 address before simulating a token transfer.");
+      } else if (bound) {
+        const allowed = parseAddressList(bound.allowedContracts).map((a) => a.toLowerCase());
+        if (!allowed.includes(contracts.token.toLowerCase())) {
+          warnings.push(
+            "MOCK is not in this policy’s allowlist. Bind the ETH + MOCK grant, or add the token in the advanced editor.",
+          );
+        }
+        if (isAddress(target) && !allowed.includes(getAddress(target).toLowerCase())) {
+          warnings.push("The ERC-20 recipient is not on this policy’s allowlist.");
+        }
+      }
     }
     if (!scoreSet) {
       warnings.push(
@@ -442,7 +503,7 @@ export default function App() {
       );
     }
     return warnings;
-  }, [amount, bound, chainScore, currentChainPlane, focusedChain, osPlane, remainingWei, scoreSet, threshold]);
+  }, [amount, asset, bound, chainScore, contracts?.token, currentChainPlane, focusedChain, osPlane, remainingWei, scoreSet, target, threshold]);
 
   function applyAddresses() {
     if (!isAddress(walletInput) || !isAddress(oracleInput) || !isAddress(tokenInput)) {
@@ -582,6 +643,56 @@ export default function App() {
     }
   }
 
+  async function revokeAll() {
+    if (!contracts) return;
+    setBusy("revoke-all");
+    setFlash(null);
+    try {
+      const hash = await ownerWallet().writeContract({
+        address: contracts.wallet,
+        abi: boundWalletAbi,
+        functionName: "revokeAll",
+        args: [revokeReason || "Owner panic — revoke every policyHash"],
+      });
+      await publicClient().waitForTransactionReceipt({ hash });
+      if (bound) setBound({ ...bound, isActive: false });
+      announce({
+        tone: "ok",
+        text:
+          osPlane === "assigned"
+            ? "Panic revoke-all on-chain. Every active policyHash is dead. Agent OS is still marked assigned."
+            : "Panic revoke-all. Every active policyHash is dead. The agent cannot spend.",
+      });
+      await refreshChain();
+    } catch (err) {
+      announce({ tone: "bad", text: explainRevert(err) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function applyTemplate(id: GrantTemplateId) {
+    if (id === "token" && !contracts?.token) {
+      announce({ tone: "mute", text: "Load contract addresses first so ETH + MOCK can allowlist the token." });
+      return;
+    }
+    const next = applyGrantTemplate(id, {
+      recipient: RECIPIENT_ADDRESS,
+      token: contracts?.token,
+      now: Math.floor(Date.now() / 1000),
+    });
+    setDraft((prev) => ({ ...prev, ...next }));
+    announce({
+      tone: "ok",
+      text:
+        id === "token"
+          ? "Grant set to ETH + MOCK (recipient and token allowlisted). Bind to register it."
+          : id === "tight"
+            ? "Grant set to a one-hour 0.1 ETH session. Bind to register it."
+            : "Grant set to ETH pay (1 ETH / tx, 5 ETH / day).",
+    });
+  }
+
   async function applyRisk() {
     if (!contracts) return;
     setBusy("risk");
@@ -626,8 +737,20 @@ export default function App() {
     setFlash(null);
     try {
       if (!isAddress(target)) throw new Error("Target address is not valid.");
-      const value = parseEther(amount);
+      const amountWei = parseEther(amount);
       const nonceBn = BigInt(nonce);
+      const recipient = getAddress(target);
+      const isToken = asset === "mock";
+      if (isToken && !contracts.token) throw new Error("Load the MockERC20 address first.");
+      const data = isToken
+        ? encodeFunctionData({
+            abi: mockErc20Abi,
+            functionName: "transfer",
+            args: [recipient, amountWei],
+          })
+        : "0x";
+      const callTarget = isToken ? contracts.token : recipient;
+      const value = isToken ? 0n : amountWei;
       const onChain = await publicClient().readContract({
         address: contracts.wallet,
         abi: boundWalletAbi,
@@ -635,6 +758,9 @@ export default function App() {
         args: [bound.policyHash],
       });
       const validUntil = onChain[3];
+      const bytes = crypto.getRandomValues(new Uint8Array(32));
+      const secret = toHex(bytes) as Hex;
+      const commitment = keccak256(secret);
       const signature = await AGENT_ACCOUNT.signTypedData({
         domain: {
           ...eip712Domain,
@@ -646,13 +772,13 @@ export default function App() {
         message: {
           agent: getAddress(bound.agent),
           action,
-          target: getAddress(target),
+          target: callTarget,
           value,
-          data: "0x",
+          data,
           nonce: nonceBn,
           validUntil,
           policyHash: bound.policyHash,
-          entropyCommitment: ZERO_HASH,
+          entropyCommitment: commitment,
         },
       });
 
@@ -660,15 +786,49 @@ export default function App() {
         address: contracts.wallet,
         abi: boundWalletAbi,
         functionName: "executeAction",
-        args: [bound.policyHash, getAddress(target), value, "0x", nonceBn, ZERO_HASH, signature, action],
+        args: [bound.policyHash, callTarget, value, data, nonceBn, commitment, signature, action],
       });
-      await publicClient().waitForTransactionReceipt({ hash });
+      const receipt = await publicClient().waitForTransactionReceipt({ hash });
+      const executed = parseEventLogs({
+        abi: boundWalletAbi,
+        logs: receipt.logs,
+        eventName: "ActionExecuted",
+      });
+      const entryId = executed[0]?.args.auditEntryId;
+      if (entryId) setPendingEntropy({ secret, commitment, entryId });
       setNonce(String(nonceBn + 1n));
       announce({
         tone: "ok",
-        text: `Agent action succeeded. ${formatEth(value)} sent to the recipient under ${policyLabel(bound.policyHash)}.`,
+        text: isToken
+          ? `Agent action succeeded. ${amount} MOCK transferred under ${policyLabel(bound.policyHash)}. Reveal entropy when you want the audit check.`
+          : `Agent action succeeded. ${formatEth(value)} sent to the recipient under ${policyLabel(bound.policyHash)}. Reveal entropy when you want the audit check.`,
       });
       await refreshChain();
+      await refreshActivity();
+    } catch (err) {
+      announce({ tone: "bad", text: explainRevert(err) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function revealLastEntropy() {
+    if (!contracts || !pendingEntropy) return;
+    setBusy("reveal");
+    setFlash(null);
+    try {
+      const hash = await ownerWallet().writeContract({
+        address: contracts.wallet,
+        abi: boundWalletAbi,
+        functionName: "revealEntropy",
+        args: [pendingEntropy.entryId, pendingEntropy.secret],
+      });
+      await publicClient().waitForTransactionReceipt({ hash });
+      announce({
+        tone: "ok",
+        text: `Entropy revealed for ${shortHash(pendingEntropy.entryId)}. keccak256(secret) matches the audit commitment. This is an audit check, not host-manipulation protection.`,
+      });
+      setPendingEntropy(null);
       await refreshActivity();
     } catch (err) {
       announce({ tone: "bad", text: explainRevert(err) });
@@ -701,12 +861,14 @@ export default function App() {
 
       <p className="mb-6 text-sm text-mute">
         Camera path: mark Agent OS assigned → Bind the grant → transfer 0.1 ETH → transfer 2 ETH
-        (fail) → revoke on-chain while assignment still looks live. MVP: one focused policyHash.
+        (fail) → optional MOCK transfer / entropy reveal → revoke or panic-all on-chain while
+        assignment still looks live.
       </p>
       <p className="mb-6 rounded-xl border border-rule bg-paper px-4 py-3 text-sm text-mute">
         Track A trust: Agent OS assign/revoke is off-chain (camera toggle or MCP). It does not bind
         or unbind this wallet. MockRiskOracle is a mock IERC-8126 (Owner-only setScore; unset scores
-        fail closed). Entropy commit–reveal is stubbed. Not ERC-8004 Final. Details in{" "}
+        fail closed). Entropy commit–reveal is an audit check (not host-manipulation protection).
+        Not ERC-8004 Final. Panic revoke-all is a Bound Wallet extension. Details in{" "}
         <span className="font-mono text-cream">TRUST.md</span>.
       </p>
 
@@ -721,7 +883,9 @@ export default function App() {
         canBind={Boolean(contracts) && currentChainPlane !== "active"}
         busy={busy}
         onBind={() => void registerPolicy()}
+        onTemplate={applyTemplate}
         bindHint={bindHint}
+        hasToken={Boolean(contracts?.token)}
       />
 
       {flash && (
@@ -778,7 +942,8 @@ export default function App() {
           </button>
           {contracts && (
             <span className="text-sm text-mute">
-              Vault holds {formatEth(vaultEth)} (asset: native ETH)
+              Vault holds {formatEth(vaultEth)}
+              {vaultToken > 0n ? ` · ${formatEth(vaultToken).replace(" ETH", " MOCK")}` : ""}
             </span>
           )}
         </div>
@@ -990,27 +1155,46 @@ export default function App() {
             tokenAddress={contracts?.token}
           />
 
-          {bound && (
+          {(bound || chainPolicies.some((p) => p.isActive)) && (
             <section className="card">
               <h2 className="font-serif text-2xl">Revoke</h2>
               <p className="mt-1 mb-3 text-sm text-mute">
                 Only the owner can revoke. The agent cannot. This does{" "}
                 <span className="text-cream">not</span> unassign Agent OS — assignment can still look
-                live. Revoke applies to{" "}
-                <span className="font-mono text-cream">{policyLabel(bound.policyHash)}</span> only.
+                live. Single revoke applies to{" "}
+                <span className="font-mono text-cream">
+                  {bound ? policyLabel(bound.policyHash) : "the focused hash"}
+                </span>{" "}
+                only. Panic revoke-all is a Bound Wallet extension (Safe-style), not ERC-8196.
               </p>
               <label>
                 <span className="lbl">Reason</span>
                 <input className="field" value={revokeReason} onChange={(e) => setRevokeReason(e.target.value)} />
               </label>
-              <button
-                type="button"
-                className="btn btn-bad mt-3"
-                disabled={busy !== null || !bound.isActive}
-                onClick={() => void revokePolicy()}
-              >
-                {busy === "revoke" ? "Revoking…" : bound.isActive ? "Revoke on-chain (Agent OS unchanged)" : "Already revoked"}
-              </button>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {bound && (
+                  <button
+                    type="button"
+                    className="btn btn-bad"
+                    disabled={busy !== null || !bound.isActive}
+                    onClick={() => void revokePolicy()}
+                  >
+                    {busy === "revoke"
+                      ? "Revoking…"
+                      : bound.isActive
+                        ? "Revoke on-chain (Agent OS unchanged)"
+                        : "Already revoked"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={busy !== null || !chainPolicies.some((p) => p.isActive)}
+                  onClick={() => void revokeAll()}
+                >
+                  {busy === "revoke-all" ? "Revoking all…" : "Panic revoke-all"}
+                </button>
+              </div>
             </section>
           )}
 
@@ -1019,8 +1203,10 @@ export default function App() {
             <p className="mt-1 mb-4 text-sm text-mute">
               Builds and signs EIP-712 AgentAction with the Agent key, then the Owner relays{" "}
               <span className="text-cream">executeAction</span> including the trailing action string.
-              This simulate path sends <span className="font-mono text-cream">data = 0x</span> (native
-              ETH). ERC-20 transfer/transferFrom in calldata is metered on-chain, not from this form.
+              Native ETH uses <span className="font-mono text-cream">data = 0x</span>. MOCK encodes{" "}
+              <span className="font-mono text-cream">transfer(recipient, amount)</span> — metered in
+              raw 18-decimal units against the same caps. Each act commits entropy; reveal is an audit
+              check, not host-manipulation protection.
             </p>
             <div className="grid gap-3 sm:grid-cols-2">
               <label>
@@ -1028,7 +1214,7 @@ export default function App() {
                 <input className="field" value={action} onChange={(e) => setAction(e.target.value)} />
               </label>
               <label>
-                <span className="lbl">Amount (ETH)</span>
+                <span className="lbl">{asset === "mock" ? "Amount (MOCK, 18 decimals)" : "Amount (ETH)"}</span>
                 <input className="field" value={amount} onChange={(e) => setAmount(e.target.value)} />
               </label>
               <label className="sm:col-span-2">
@@ -1041,7 +1227,14 @@ export default function App() {
               </label>
               <label>
                 <span className="lbl">Asset</span>
-                <input className="field" value="Native ETH" readOnly />
+                <select
+                  className="field"
+                  value={asset}
+                  onChange={(e) => setAsset(e.target.value === "mock" ? "mock" : "eth")}
+                >
+                  <option value="eth">Native ETH</option>
+                  <option value="mock">MockERC20</option>
+                </select>
               </label>
             </div>
 
@@ -1053,7 +1246,19 @@ export default function App() {
                   k="Who receives it"
                   v={isAddress(target) ? `Recipient ${target}` : "Enter a recipient address"}
                 />
-                <Row k="Amount" v={`${amount || "0"} ETH`} />
+                <Row k="Amount" v={`${amount || "0"} ${asset === "mock" ? "MOCK" : "ETH"}`} />
+                <Row
+                  k="Call target"
+                  v={
+                    asset === "mock"
+                      ? contracts?.token
+                        ? `MockERC20 ${contracts.token}`
+                        : "Load the token address first"
+                      : isAddress(target)
+                        ? target
+                        : "Recipient"
+                  }
+                />
                 <Row
                   k="Policy"
                   v={bound ? policyLabel(bound.policyHash) : "No policy registered yet"}
@@ -1081,24 +1286,38 @@ export default function App() {
               {advancedOpen && bound && (
                 <pre className="mt-2 overflow-x-auto text-[11px] leading-5 text-mute">
 {`policyHash ${bound.policyHash}
-target     ${target}
-valueWei   ${safeParseEther(amount)}
+recipient  ${target}
+callTarget ${asset === "mock" ? (contracts?.token ?? "token") : target}
+valueWei   ${asset === "mock" ? "0" : safeParseEther(amount)}
+data       ${asset === "mock" ? "transfer(recipient, amount)" : "0x"}
 action     ${action}
 nonce      ${nonce}
-entropy    ${ZERO_HASH}
+entropy    keccak256(secret) per act
 validUntil ${previewValidUntil}`}
                 </pre>
               )}
             </div>
 
-            <button
-              type="button"
-              className="btn btn-copper mt-4"
-              disabled={busy !== null || !bound?.isActive}
-              onClick={() => void simulateAgent()}
-            >
-              {busy === "execute" ? "Submitting…" : "Sign as Agent and execute"}
-            </button>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="btn btn-copper"
+                disabled={busy !== null || !bound?.isActive}
+                onClick={() => void simulateAgent()}
+              >
+                {busy === "execute" ? "Submitting…" : "Sign as Agent and execute"}
+              </button>
+              {pendingEntropy && (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={busy !== null}
+                  onClick={() => void revealLastEntropy()}
+                >
+                  {busy === "reveal" ? "Revealing…" : "Reveal last entropy"}
+                </button>
+              )}
+            </div>
           </section>
         </div>
       </div>
@@ -1106,7 +1325,8 @@ validUntil ${previewValidUntil}`}
       <section className="card mt-6">
         <h2 className="font-serif text-2xl">Activity log</h2>
         <p className="mt-1 mb-4 text-sm text-mute">
-          Hash-chained audit. Each row’s previous hash should match the entry id above it.
+          Hash-chained audit. Each row’s previous hash should match the entry id above it. Entropy
+          reveal is an audit check on the commitment stored in that entry.
         </p>
         {activity.length === 0 ? (
           <p className="text-sm text-mute">No agent actions yet. A successful transfer appears here.</p>
@@ -1121,7 +1341,8 @@ validUntil ${previewValidUntil}`}
                   <th className="pb-2 pr-3 font-medium">Amount</th>
                   <th className="pb-2 pr-3 font-medium">policyHash</th>
                   <th className="pb-2 pr-3 font-medium">Previous</th>
-                  <th className="pb-2 font-medium">Entry</th>
+                  <th className="pb-2 pr-3 font-medium">Entry</th>
+                  <th className="pb-2 font-medium">Entropy</th>
                 </tr>
               </thead>
               <tbody>
@@ -1134,14 +1355,21 @@ validUntil ${previewValidUntil}`}
                       <td className="py-3 pr-3 font-mono">{row.sequence.toString()}</td>
                       <td className="py-3 pr-3 font-mono">{row.action}</td>
                       <td className="py-3 pr-3 font-mono text-xs">{shortHash(row.target, 4, 4)}</td>
-                      <td className="py-3 pr-3">{formatEth(row.value)}</td>
+                      <td className="py-3 pr-3">{row.amountLabel}</td>
                       <td className="py-3 pr-3 font-mono text-xs">{shortHash(row.policyHash)}</td>
                       <td className="py-3 pr-3 font-mono text-xs">
                         {genesis ? "genesis" : shortHash(row.previousHash)}
                         {linked && <span className="ml-2 text-ok">links seq {prev.sequence.toString()}</span>}
                         {prev && !linked && !genesis && <span className="ml-2 text-bad">broken link</span>}
                       </td>
-                      <td className="py-3 font-mono text-xs">{shortHash(row.entryId)}</td>
+                      <td className="py-3 pr-3 font-mono text-xs">{shortHash(row.entryId)}</td>
+                      <td className="py-3 text-xs">
+                        {row.entropyRevealed ? (
+                          <span className="text-ok">revealed</span>
+                        ) : (
+                          <span className="text-mute">committed</span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}

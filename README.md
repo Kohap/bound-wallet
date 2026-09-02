@@ -18,7 +18,7 @@ script/Deploy.s.sol
 script/deploy-anvil.sh
 ui/          ← Vite + React + viem permission desk
 agent-os/TRACK-A-MCP-HUB.md  ← Agent OS camera fallback (assign→bind→act→revoke)
-TRUST.md     ← Track A trust: mock 8126, entropy stub, MCP vs chain, Anvil, no ERC-8004
+TRUST.md     ← Track A trust: mock 8126, entropy audit-reveal, MCP vs chain, Anvil, no ERC-8004
 README.md
 ```
 
@@ -32,11 +32,15 @@ Bound Wallet **adds `string action` as a trailing argument** to `executeAction`,
 
 **ERC-20 metering:** if `data` is non-empty, it must be a canonical ABI-encoded `transfer(address,uint256)` or `transferFrom(address,address,uint256)`. The decoded token `amount` is added to native `value` and checked against the same `maxValuePerTx` / `maxValuePerDay`. Amounts are **raw token units with no decimal conversion** (1:1 with wei only for 18-decimal tokens such as `MockERC20`). Unknown or padded calldata is rejected. The inner ERC-20 recipient must be allowlisted.
 
-See [TRUST.md](TRUST.md) for Track A trust boundaries (mock IERC-8126, entropy stub, Agent OS MCP off-chain vs Bound Wallet on-chain, Anvil-only, no ERC-8004 Final/production claim).
+See [TRUST.md](TRUST.md) for Track A trust boundaries (mock IERC-8126, entropy audit-reveal, Agent OS MCP off-chain vs Bound Wallet on-chain, Anvil-only, no ERC-8004 Final/production claim).
 
 ## Entropy
 
-`entropyCommitment` is stored on the hash-chained audit entry. **Commit-reveal is stubbed** (no reveal, no `EntropyVerificationFailed`).
+`entropyCommitment` is stored on the hash-chained audit entry. The desk commits `keccak256(secret)` per act and can reveal the preimage (`revealEntropy`). Mismatch reverts `EntropyVerificationFailed`. **Audit check only** — not host-manipulation protection.
+
+## Panic revoke-all
+
+`revokeAll(string reason)` is a **Bound Wallet extension** (not ERC-8196): owner deactivates every active `policyHash` in one transaction. Agent OS is untouched.
 
 ## Anvil only
 
@@ -56,7 +60,7 @@ Requires [Foundry](https://book.getfoundry.sh/getting-started/installation). `fo
 forge test
 ```
 
-Hour-1 suite plus ERC-20 metering, fail-closed oracle, and admin/revert regressions. Keep them green when changing anything except `ui/`.
+Hour-1 suite plus ERC-20 metering, fail-closed oracle, panic revoke-all, entropy reveal, and admin/revert regressions. Keep them green when changing anything except `ui/`.
 
 ## Permission UI
 
@@ -82,10 +86,11 @@ Dual-plane desk: [agent-os/TRACK-A-MCP-HUB.md](agent-os/TRACK-A-MCP-HUB.md). No 
 
 0. **Assign** — In Bound Wallet, **Mark assigned** (camera control; does not call Binance). Optional cut to [binance.com/agent-os](https://www.binance.com/agent-os) for a real subaccount grant, then back.
 1. **Mismatch** — Banner: *Assigned off-chain. Not bound. The agent cannot spend.*
-2. **Bind** — Leave the grant card defaults (transfer, 1 ETH / tx, 5 ETH / day, recipient allowlisted, mock score ≤ 20). **Bind on-chain as Owner.** Copy the policy hash.
-3. **In-policy act** — Simulate agent amount `0.1` ETH. Activity log shows sequence 1.
+2. **Bind** — Leave the grant card defaults (ETH pay: transfer, 1 ETH / tx, 5 ETH / day, recipient allowlisted, mock score ≤ 20), or pick **ETH + MOCK** / **Tight session**. **Bind on-chain as Owner.** Copy the policy hash.
+3. **In-policy act** — Simulate agent amount `0.1` ETH. Activity log shows sequence 1. Optional: **Reveal last entropy**.
 4. **Out-of-policy revert** — Amount `2` ETH. Wallet reverts; nonce is not consumed.
-5. **Revoke** — Owner **Revoke on-chain (Agent OS unchanged)**. Banner: *Agent OS still assigned. Policy revoked. Spend is dead.* Do not treat Agent OS revoke as `revokePolicy`.
+5. **Optional MOCK** — Asset MockERC20, amount `0.1`, same recipient (only if the bound grant allowlisted the token).
+6. **Revoke** — Owner **Revoke on-chain (Agent OS unchanged)** or **Panic revoke-all**. Banner: *Agent OS still assigned. Policy revoked. Spend is dead.* Do not treat Agent OS revoke as `revokePolicy`.
 
 ## Cast demo (hour 1, still valid)
 
@@ -195,7 +200,7 @@ cast call $WALLET "getPolicy(bytes32)(address,address,uint256,uint256,bool)" $PO
 
 ## Out of scope
 
-Discord/Telegram, **live** CEX / Agent OS MCP wiring, real ERC-8126 / ERC-8004, ERC-4337 bundler, entropy reveal, trading, mainnet or public testnet deploy. Agent OS assign/revoke on camera is documented in `agent-os/TRACK-A-MCP-HUB.md` as a fallback only.
+Discord/Telegram, **live** CEX / Agent OS MCP wiring, real ERC-8126 / ERC-8004, ERC-4337 bundler, trading, mainnet or public testnet deploy. Agent OS assign/revoke on camera is documented in `agent-os/TRACK-A-MCP-HUB.md` as a fallback only.
 
 This is **not** ERC-8004 Final and **not** a production Agent OS integration. Trust boundaries: [TRUST.md](TRUST.md).
 

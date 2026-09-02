@@ -14,7 +14,8 @@ Show a judge, in one continuous take:
 2. Owner **binds** the grant card on-chain as an ERC-8196 policy.
 3. The agent **acts in-policy** (under the cap).
 4. An **out-of-policy** act reverts.
-5. Owner **revokes on-chain**. Banner: *Agent OS still assigned. Policy revoked. Spend is dead.*
+5. Optional: MOCK transfer (ETH + MOCK grant) and/or **Reveal last entropy**.
+6. Owner **revokes on-chain** (or **Panic revoke-all**). Banner: *Agent OS still assigned. Policy revoked. Spend is dead.*
 
 Do **not** narrate Agent OS revoke as if it were `revokePolicy`.
 
@@ -40,29 +41,32 @@ Record 1080p. Hold each card 3–5 seconds. Narrate in plain language — no hex
 
 - Local: `anvil`, `./script/deploy-anvil.sh`, `cd ui && npm run dev`
 - Load addresses if needed.
-- Grant card defaults are fine: `transfer`, 1 ETH / tx, recipient allowlisted, mock score ≤ 20.
+- Grant card defaults are fine: `transfer`, 1 ETH / tx, recipient allowlisted, mock score ≤ 20. **ETH + MOCK** allowlists the token too. **Tight session** is 0.1 ETH / 1 hour.
 - **Bind on-chain as Owner.** Hold policyHash (short label + copyable hash), cap, expiry.
 
 ### 3. In-policy act
 
 - Simulate agent: `0.1` ETH, allowlisted recipient.
 - Activity log: sequence 1, genesis previous hash.
+- Optional: **Reveal last entropy** (audit check, not a TEE).
 - Narrate: “In policy. Under the cap.”
 
 ### 4. Out-of-policy revert
 
 - Amount `2` ETH. Preview warns; execute reverts; nonce not consumed.
 - Optional: write mock risk above 20, retry `0.1` ETH.
+- Optional: Asset **MockERC20**, `0.1` MOCK, if the bound grant allowlisted the token.
 
 ### 5. Revoke on-chain (leave Agent OS assigned)
 
-- **Revoke on-chain (Agent OS unchanged).** Status Revoked.
+- **Revoke on-chain (Agent OS unchanged)** or **Panic revoke-all** (every active hash).
+- Status Revoked.
 - Banner: **Agent OS still assigned. Policy revoked. Spend is dead.**
 - Optional extra cut: revoke on Agent OS too, and say it still was not the kill switch.
 
 ## Voiceover (short)
 
-Assign on Agent OS. Bind the same limit on-chain. Agent transfers in policy. Over-cap reverts. Owner revokes the policyHash. Agent OS can still look assigned. The agent never had the owner key.
+Assign on Agent OS. Bind the same limit on-chain. Agent transfers in policy. Over-cap reverts. Owner revokes the policyHash (or panic-all). Agent OS can still look assigned. The agent never had the owner key.
 
 ## Later: real MCP
 

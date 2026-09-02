@@ -1,4 +1,4 @@
-import { formatWhen, fromDatetimeLocalOrZero, parseActionList, shortHash } from "./format";
+import { formatWhen, fromDatetimeLocalOrZero, parseActionList, shortHash, toDatetimeLocal } from "./format";
 
 export type OsPlane = "unassigned" | "assigned";
 
@@ -75,23 +75,56 @@ export type GrantDraft = {
 export function grantLines(draft: GrantDraft): string[] {
   const actions = parseActionList(draft.allowedActions);
   const action = actions[0] ?? "transfer";
-  const extra = actions.length > 1 ? ` (+${actions.length - 1} more)` : "";
+  const actionExtra = actions.length > 1 ? ` (+${actions.length - 1} more)` : "";
   const day =
     draft.maxValuePerDay.trim() && Number(draft.maxValuePerDay) > 0
       ? `, ${draft.maxValuePerDay} ETH / day`
       : ", no daily cap";
   const until = formatWhen(fromDatetimeLocalOrZero(draft.validUntil));
-  const recipient = draft.allowedContracts.trim().split(/[\s,]+/).filter(Boolean)[0];
-  const recipientLabel =
-    recipient && /^0x[0-9a-fA-F]{40}$/.test(recipient)
+  const tokens = draft.allowedContracts.trim().split(/[\s,]+/).filter(Boolean);
+  const recipient = tokens[0];
+  const more = tokens.slice(1);
+  let recipientLabel = recipient
+    ? /^0x[0-9a-fA-F]{40}$/.test(recipient)
       ? `only to ${shortHash(recipient, 4, 4)}`
-      : recipient
-        ? "recipient allowlist is not a 20-byte address"
-        : "no recipient allowlisted yet";
+      : "recipient allowlist is not a 20-byte address"
+    : "no recipient allowlisted yet";
+  if (more.length === 1 && /^0x[0-9a-fA-F]{40}$/.test(more[0])) {
+    recipientLabel += ` and token ${shortHash(more[0], 4, 4)}`;
+  } else if (more.length > 1) {
+    recipientLabel += ` (+${more.length} more)`;
+  }
   return [
-    `${action}${extra} ≤ ${draft.maxValuePerTx || "0"} ETH per tx${day}`,
+    `${action}${actionExtra} ≤ ${draft.maxValuePerTx || "0"} ETH per tx${day}`,
     recipientLabel,
     `until ${until}`,
     `while mock risk ≤ ${draft.minVerificationScore || "0"}`,
   ];
+}
+
+export type GrantTemplateId = "eth" | "token" | "tight";
+
+export function applyGrantTemplate(
+  id: GrantTemplateId,
+  ctx: { recipient: string; token?: string; now: number },
+): {
+  allowedActions: string;
+  allowedContracts: string;
+  maxValuePerTx: string;
+  maxValuePerDay: string;
+  validAfter: string;
+  validUntil: string;
+  minVerificationScore: string;
+} {
+  const hours = id === "tight" ? 1 : 30 * 24;
+  return {
+    allowedActions: "transfer",
+    allowedContracts:
+      id === "token" && ctx.token ? `${ctx.recipient}\n${ctx.token}` : ctx.recipient,
+    maxValuePerTx: id === "tight" ? "0.1" : "1",
+    maxValuePerDay: id === "tight" ? "0.3" : "5",
+    validAfter: toDatetimeLocal(ctx.now - 60),
+    validUntil: toDatetimeLocal(ctx.now + hours * 3600),
+    minVerificationScore: "20",
+  };
 }

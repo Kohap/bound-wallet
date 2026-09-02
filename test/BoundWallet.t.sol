@@ -15,6 +15,7 @@ contract BoundWalletTest is Test {
     );
     event PolicyRevoked(bytes32 indexed policyHash, string reason);
     event AuditEntryLogged(bytes32 indexed entryId, uint256 sequence, bytes32 sessionId, string actionType);
+    event EntropyRevealed(bytes32 indexed entryId, bytes32 secret);
 
     uint256 internal constant AGENT_ID = 1;
     uint8 internal constant MIN_SCORE = 20;
@@ -535,6 +536,103 @@ contract BoundWalletTest is Test {
         assertEq(oracle.getLatestRiskScore(AGENT_ID), 5);
     }
 
+    function test_revokeAll_deactivatesEveryActivePolicy() public {
+        bytes32 first = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient));
+        bytes32 second = _register(2 ether, 0, validAfter, validUntil, _addrs(recipient));
+        assertTrue(first != second);
+
+        vm.expectEmit(true, false, false, true, address(wallet));
+        emit PolicyRevoked(first, "panic");
+        vm.expectEmit(true, false, false, true, address(wallet));
+        emit PolicyRevoked(second, "panic");
+        vm.prank(owner);
+        uint256 revoked = wallet.revokeAll("panic");
+        assertEq(revoked, 2);
+
+        (,,,, bool firstActive) = wallet.getPolicy(first);
+        (,,,, bool secondActive) = wallet.getPolicy(second);
+        assertFalse(firstActive);
+        assertFalse(secondActive);
+
+        _expectRevertExecute(
+            abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, first, "policy inactive"),
+            first,
+            recipient,
+            0.1 ether,
+            bytes(""),
+            1,
+            "transfer",
+            agentPk
+        );
+    }
+
+    function test_revokeAll_skipsAlreadyRevoked() public {
+        bytes32 first = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient));
+        bytes32 second = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient));
+        vm.prank(owner);
+        wallet.revokePolicy(first, "one");
+        vm.prank(owner);
+        uint256 revoked = wallet.revokeAll("panic");
+        assertEq(revoked, 1);
+        (,,,, bool secondActive) = wallet.getPolicy(second);
+        assertFalse(secondActive);
+    }
+
+    function test_revokeAll_revertsNotOwner() public {
+        _register(1 ether, 0, validAfter, validUntil, _addrs(recipient));
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, bytes32(0), "not owner"));
+        wallet.revokeAll("nope");
+    }
+
+    function test_revokeAll_revertsWhenNoneActive() public {
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, bytes32(0), "no active policies"));
+        wallet.revokeAll("empty");
+    }
+
+    function test_revealEntropy_succeeds() public {
+        bytes32 secret = bytes32(uint256(0x51));
+        bytes32 commitment = keccak256(abi.encodePacked(secret));
+        bytes32 policyHash = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient));
+        (bool ok, bytes32 entryId) =
+            _executeWithEntropy(policyHash, recipient, 0.1 ether, bytes(""), 1, "transfer", agentPk, commitment);
+        assertTrue(ok);
+        vm.expectEmit(true, false, false, true, address(wallet));
+        emit EntropyRevealed(entryId, secret);
+        wallet.revealEntropy(entryId, secret);
+        assertTrue(wallet.entropyRevealed(entryId));
+    }
+
+    function test_revealEntropy_revertsWrongSecret() public {
+        bytes32 secret = bytes32(uint256(0x51));
+        bytes32 commitment = keccak256(abi.encodePacked(secret));
+        bytes32 policyHash = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient));
+        (, bytes32 entryId) =
+            _executeWithEntropy(policyHash, recipient, 0.1 ether, bytes(""), 1, "transfer", agentPk, commitment);
+        vm.expectRevert(abi.encodeWithSelector(BoundWallet.EntropyVerificationFailed.selector, entryId));
+        wallet.revealEntropy(entryId, bytes32(uint256(0x99)));
+        assertFalse(wallet.entropyRevealed(entryId));
+    }
+
+    function test_revealEntropy_revertsAlreadyRevealed() public {
+        bytes32 secret = bytes32(uint256(0x51));
+        bytes32 commitment = keccak256(abi.encodePacked(secret));
+        bytes32 policyHash = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient));
+        (, bytes32 entryId) =
+            _executeWithEntropy(policyHash, recipient, 0.1 ether, bytes(""), 1, "transfer", agentPk, commitment);
+        wallet.revealEntropy(entryId, secret);
+        vm.expectRevert(abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, entryId, "already revealed"));
+        wallet.revealEntropy(entryId, secret);
+    }
+
+    function test_revealEntropy_revertsUnknownEntry() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, bytes32(uint256(7)), "audit not found")
+        );
+        wallet.revealEntropy(bytes32(uint256(7)), bytes32(uint256(1)));
+    }
+
     function test_executeAction_revertsFalseReturningErc20() public {
         FalseReturningERC20 bad = new FalseReturningERC20();
         bad.mint(address(wallet), 100 ether);
@@ -582,8 +680,21 @@ contract BoundWalletTest is Test {
         string memory action,
         uint256 pk
     ) internal returns (bool, bytes32) {
-        bytes memory sig = _makeSig(policyHash, target, value, data, nonce, action, pk);
-        return wallet.executeAction(policyHash, target, value, data, nonce, ENTROPY, sig, action);
+        return _executeWithEntropy(policyHash, target, value, data, nonce, action, pk, ENTROPY);
+    }
+
+    function _executeWithEntropy(
+        bytes32 policyHash,
+        address target,
+        uint256 value,
+        bytes memory data,
+        uint256 nonce,
+        string memory action,
+        uint256 pk,
+        bytes32 entropyCommitment
+    ) internal returns (bool, bytes32) {
+        bytes memory sig = _makeSigWithEntropy(policyHash, target, value, data, nonce, action, pk, entropyCommitment);
+        return wallet.executeAction(policyHash, target, value, data, nonce, entropyCommitment, sig, action);
     }
 
     function _expectRevertExecute(
@@ -610,8 +721,21 @@ contract BoundWalletTest is Test {
         string memory action,
         uint256 pk
     ) internal view returns (bytes memory) {
+        return _makeSigWithEntropy(policyHash, target, value, data, nonce, action, pk, ENTROPY);
+    }
+
+    function _makeSigWithEntropy(
+        bytes32 policyHash,
+        address target,
+        uint256 value,
+        bytes memory data,
+        uint256 nonce,
+        string memory action,
+        uint256 pk,
+        bytes32 entropyCommitment
+    ) internal view returns (bytes memory) {
         (address policyAgent,,, uint256 until,) = wallet.getPolicy(policyHash);
-        return _sign(pk, policyAgent, action, target, value, data, nonce, until, policyHash, ENTROPY);
+        return _sign(pk, policyAgent, action, target, value, data, nonce, until, policyHash, entropyCommitment);
     }
 
     function _sign(

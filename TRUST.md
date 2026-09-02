@@ -7,6 +7,8 @@ Bound Wallet is an **Anvil-only demo** (chainId 31337). It is not a production w
 | Surface | Where it lives | What it actually is |
 | --- | --- | --- |
 | Bound Wallet `registerPolicy` / `executeAction` / `revokePolicy` | On-chain (Anvil) | ERC-8196-shaped policy module. Caps, allowlists, nonce, and revoke are enforced here. |
+| Bound Wallet `revokeAll` | On-chain (Anvil) | **Bound Wallet extension**, not ERC-8196. Owner panic: one tx deactivates every active `policyHash`. Agent OS is untouched. |
+| Bound Wallet `revealEntropy` | On-chain (Anvil) | Audit check: `keccak256(secret)` must match the entry’s `entropyCommitment`. **Not** host-manipulation protection. |
 | Permission UI | Off-chain browser | Convenience. Dual-plane Assign/Bind is **not** a security boundary. Caps are enforced by the contract. |
 | Agent OS assign toggle in the UI | Off-chain camera state | Local mark assigned/unassigned for the Track A take. It does **not** call Binance and does **not** register or revoke an on-chain policy. |
 | Binance Agent OS (assign / revoke) | Off-chain control plane | MCP may be connected for live Agent OS camera assign/revoke. Assigning or revoking in Agent OS does **not** register or revoke an on-chain policy. |
@@ -24,9 +26,11 @@ The Track A story is: assign on Agent OS (MCP camera if connected, or the UI Ass
 
 Do not deploy this mock as a live risk gate.
 
-## Entropy stub
+## Entropy (audit check)
 
-`entropyCommitment` is stored on the hash-chained audit entry. **Commit–reveal is stubbed**: there is no reveal, no `EntropyVerificationFailed`, and no host-manipulation mitigation from ERC-8196. Treat the field as an audit annotation for the demo.
+`entropyCommitment` is stored on the hash-chained audit entry. The desk commits a fresh `keccak256(secret)` on each successful act and can **reveal** the preimage via `revealEntropy`. A mismatch reverts `EntropyVerificationFailed`. A second reveal reverts `already revealed`.
+
+This is an **audit check**. It does **not** mitigate host manipulation of the agent runtime (the ERC-8196 threat that a full entropy protocol would target). Do not narrate it as a TEE or as unhackable agent memory.
 
 ## ERC-8004 / production overclaim
 
@@ -45,4 +49,4 @@ Anvil default keys in the UI and README are **publicly known**. Pointing this st
 
 ## MVP: one focused policyHash in the UI
 
-The contract may hold several active policies. The permission desk focuses **one** `policyHash` in the editor/seal and **lists every on-chain `policyHash`**. Revoke applies only to the selected hash. Do not read one displayed hash as covering every live policy.
+The contract may hold several active policies. The permission desk focuses **one** `policyHash` in the editor/seal and **lists every on-chain `policyHash`**. Single revoke applies only to the selected hash. **Panic revoke-all** deactivates every active hash in one owner transaction. Do not read one displayed hash as covering every live policy unless you used panic.
