@@ -17,13 +17,27 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-          submodules: recursive
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
       - name: Show Forge version
         run: forge --version
+
+      # Contents-API uploads cannot create a gitlink; partial lib/forge-std
+      # on main is incomplete. Always install the full upstream library.
+      - name: Install complete forge-std
+        run: |
+          set -euo pipefail
+          rm -rf lib/forge-std
+          forge install foundry-rs/forge-std@v1.16.2 --no-commit
+          test -f lib/forge-std/src/Vm.sol
+          test -f lib/forge-std/src/console.sol
+          test -f lib/forge-std/src/safeconsole.sol
+          test -f lib/forge-std/src/StdAssertions.sol
+          test -f lib/forge-std/src/StdCheats.sol
+          test -f lib/forge-std/src/Test.sol
+          test -f lib/forge-std/src/interfaces/IMulticall3.sol
 
       - name: Run Forge fmt
         run: forge fmt --check
