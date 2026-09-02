@@ -96,12 +96,13 @@ contract BoundWalletTest is Test {
         assertEq(recipient.balance, ethAmount);
         assertEq(address(wallet).balance, 10 ether - ethAmount);
 
-        bytes memory erc20Data = abi.encodeWithSelector(MockERC20.transfer.selector, recipient, 25 ether);
+        bytes memory erc20Data = abi.encodeWithSelector(MockERC20.transfer.selector, recipient, 0.25 ether);
         (bool okToken, bytes32 tokenAudit) = _execute(policyHash, address(token), 0, erc20Data, 2, "transfer", agentPk);
         assertTrue(okToken);
         assertTrue(tokenAudit != bytes32(0));
-        assertEq(token.balanceOf(recipient), 25 ether);
-        assertEq(token.balanceOf(address(wallet)), 975 ether);
+        assertEq(token.balanceOf(recipient), 0.25 ether);
+        assertEq(token.balanceOf(address(wallet)), 999.75 ether);
+        assertEq(wallet.spentOnDay(policyHash, block.timestamp / 1 days), ethAmount + 0.25 ether);
 
         (bytes32 prev, bytes32 storedEntropy, uint256 seq,) = wallet.getAuditEntry(auditId);
         assertEq(prev, bytes32(0));
@@ -285,6 +286,121 @@ contract BoundWalletTest is Test {
             "transfer",
             agentPk
         );
+    }
+
+    function test_executeAction_revertsErc20OverMaxValuePerTx() public {
+        bytes32 policyHash = _register(1 ether, 5 ether, validAfter, validUntil, _addrs(recipient, address(token)));
+        bytes memory erc20Data = abi.encodeWithSelector(MockERC20.transfer.selector, recipient, 1 ether + 1);
+        _expectRevertExecute(
+            abi.encodeWithSelector(BoundWallet.ValueExceedsLimit.selector, 1 ether + 1, 1 ether),
+            policyHash,
+            address(token),
+            0,
+            erc20Data,
+            1,
+            "transfer",
+            agentPk
+        );
+        assertEq(token.balanceOf(recipient), 0);
+    }
+
+    function test_executeAction_revertsErc20DailyCap() public {
+        bytes32 policyHash = _register(10 ether, 1.5 ether, validAfter, validUntil, _addrs(recipient, address(token)));
+        (bool ok,) = _execute(policyHash, recipient, 1 ether, bytes(""), 1, "transfer", agentPk);
+        assertTrue(ok);
+
+        bytes memory erc20Data = abi.encodeWithSelector(MockERC20.transfer.selector, recipient, 1 ether);
+        _expectRevertExecute(
+            abi.encodeWithSelector(BoundWallet.ValueExceedsLimit.selector, 1 ether, 1.5 ether),
+            policyHash,
+            address(token),
+            0,
+            erc20Data,
+            2,
+            "transfer",
+            agentPk
+        );
+        assertEq(wallet.spentOnDay(policyHash, block.timestamp / 1 days), 1 ether);
+    }
+
+    function test_executeAction_erc20AndNativeShareTheSameMeters() public {
+        bytes32 policyHash = _register(1 ether, 2 ether, validAfter, validUntil, _addrs(recipient, address(token)));
+        (bool okEth,) = _execute(policyHash, recipient, 0.4 ether, bytes(""), 1, "transfer", agentPk);
+        assertTrue(okEth);
+
+        bytes memory erc20Data = abi.encodeWithSelector(MockERC20.transfer.selector, recipient, 0.5 ether);
+        (bool okToken,) = _execute(policyHash, address(token), 0, erc20Data, 2, "transfer", agentPk);
+        assertTrue(okToken);
+        assertEq(wallet.spentOnDay(policyHash, block.timestamp / 1 days), 0.9 ether);
+
+        bytes memory overData = abi.encodeWithSelector(MockERC20.transfer.selector, recipient, 0.7 ether);
+        _expectRevertExecute(
+            abi.encodeWithSelector(BoundWallet.ValueExceedsLimit.selector, 1.1 ether, 1 ether),
+            policyHash,
+            address(token),
+            0.4 ether,
+            overData,
+            3,
+            "transfer",
+            agentPk
+        );
+    }
+
+    function test_executeAction_revertsUnmeterableCalldata() public {
+        bytes32 policyHash = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient, address(token)));
+        bytes memory approveData = abi.encodeWithSelector(MockERC20.approve.selector, attacker, 100 ether);
+        _expectRevertExecute(
+            abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, policyHash, "unmeterable calldata"),
+            policyHash,
+            address(token),
+            0,
+            approveData,
+            1,
+            "transfer",
+            agentPk
+        );
+
+        bytes memory paddedTransfer =
+            bytes.concat(abi.encodeWithSelector(MockERC20.transfer.selector, recipient, 0.1 ether), bytes(hex"00"));
+        _expectRevertExecute(
+            abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, policyHash, "unmeterable calldata"),
+            policyHash,
+            address(token),
+            0,
+            paddedTransfer,
+            2,
+            "transfer",
+            agentPk
+        );
+    }
+
+    function test_executeAction_transferFromMetersAmount() public {
+        bytes32 policyHash = _register(1 ether, 2 ether, validAfter, validUntil, _addrs(recipient, address(token)));
+        token.mint(attacker, 10 ether);
+        vm.prank(attacker);
+        token.approve(address(wallet), 10 ether);
+
+        bytes memory data = abi.encodeWithSelector(MockERC20.transferFrom.selector, attacker, recipient, 0.3 ether);
+        (bool ok,) = _execute(policyHash, address(token), 0, data, 1, "transfer", agentPk);
+        assertTrue(ok);
+        assertEq(token.balanceOf(recipient), 0.3 ether);
+        assertEq(wallet.spentOnDay(policyHash, block.timestamp / 1 days), 0.3 ether);
+    }
+
+    function test_executeAction_revertsErc20RecipientNotAllowlisted() public {
+        bytes32 policyHash = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient, address(token)));
+        bytes memory erc20Data = abi.encodeWithSelector(MockERC20.transfer.selector, attacker, 0.1 ether);
+        _expectRevertExecute(
+            abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, policyHash, "recipient not allowlisted"),
+            policyHash,
+            address(token),
+            0,
+            erc20Data,
+            1,
+            "transfer",
+            agentPk
+        );
+        assertEq(token.balanceOf(attacker), 0);
     }
 
     function test_auditChain_linksPreviousHash() public {

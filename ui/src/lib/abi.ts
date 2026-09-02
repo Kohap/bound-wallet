@@ -96,6 +96,33 @@ export const boundWalletAbi = [
     outputs: [{ type: "uint256" }],
   },
   {
+    type: "function",
+    name: "policyCount",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "isAllowedContract",
+    stateMutability: "view",
+    inputs: [
+      { name: "policyHash", type: "bytes32" },
+      { name: "target", type: "address" },
+    ],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "isAllowedAction",
+    stateMutability: "view",
+    inputs: [
+      { name: "policyHash", type: "bytes32" },
+      { name: "actionHash", type: "bytes32" },
+    ],
+    outputs: [{ type: "bool" }],
+  },
+  {
     type: "error",
     name: "PolicyExpired",
     inputs: [
