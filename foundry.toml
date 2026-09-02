@@ -6,7 +6,7 @@ solc = "0.8.24"
 via_ir = true
 optimizer = true
 optimizer_runs = 200
-# Vendored foundry-rs/forge-std (v1.16.2) — no git submodule required for CI
+# forge-std v1.16.2 is a git submodule at lib/forge-std (see .gitmodules)
 remappings = ["forge-std/=lib/forge-std/src/"]
 
 [fmt]

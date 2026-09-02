@@ -45,7 +45,7 @@ Do not point these contracts at a public network. Anvil default keys below are p
 
 ## Tests
 
-Requires [Foundry](https://book.getfoundry.sh/getting-started/installation). `forge-std` is vendored at `lib/forge-std` (no git submodule).
+Requires [Foundry](https://book.getfoundry.sh/getting-started/installation). `forge-std` is a git submodule at `lib/forge-std` (tag `v1.16.2`). Clone with `--recurse-submodules` or run `git submodule update --init --recursive`.
 
 ```bash
 forge test
