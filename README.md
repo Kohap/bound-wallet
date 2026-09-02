@@ -56,7 +56,7 @@ Requires [Foundry](https://book.getfoundry.sh/getting-started/installation). `fo
 forge test
 ```
 
-Hour-1 suite plus ERC-20 metering regressions (**20 tests**). Keep them green when changing anything except `ui/`.
+Hour-1 suite plus ERC-20 metering, fail-closed oracle, and admin/revert regressions. Keep them green when changing anything except `ui/`.
 
 ## Permission UI
 

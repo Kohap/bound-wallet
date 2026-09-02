@@ -17,8 +17,8 @@ The Track A story is: assign on Agent OS (MCP camera if connected), **bind the s
 
 `MockRiskOracle` is a stand-in, not IERC-8126 / ERC-8126 production.
 
-- `setScore` has **no access control**. Anyone on Anvil can write any `agentId`.
-- Unset scores default to `0`, which passes any `minVerificationScore` (reject only if score **exceeds** the threshold).
+- `setScore` is **owner-only** (the Anvil deployer / UI Owner). Random accounts cannot write scores.
+- Unset `agentId`s fail closed: `hasScore` is false and `executeAction` reverts `risk score unset`. An explicit score of `0` is recorded and still passes (lowest risk).
 - The oracle address is immutable on `BoundWallet`; swapping in a real verifier is a deploy-time choice, not this mock.
 
 Do not deploy this mock as a live risk gate.

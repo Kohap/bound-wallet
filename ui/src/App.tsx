@@ -144,6 +144,7 @@ export default function App() {
   const [vaultEth, setVaultEth] = useState<bigint>(0n);
   const [spentToday, setSpentToday] = useState<bigint>(0n);
   const [chainScore, setChainScore] = useState(5);
+  const [scoreSet, setScoreSet] = useState(true);
   const [sliderScore, setSliderScore] = useState(5);
   const [activity, setActivity] = useState<ActivityRow[]>([]);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -207,8 +208,14 @@ export default function App() {
     if (!contracts) return;
     const client = publicClient();
     try {
-      const [bal, score, block, registered] = await Promise.all([
+      const [bal, has, score, block, registered] = await Promise.all([
         client.getBalance({ address: contracts.wallet }),
+        client.readContract({
+          address: contracts.oracle,
+          abi: mockRiskOracleAbi,
+          functionName: "hasScore",
+          args: [BigInt(draft.agentId || "1")],
+        }),
         client.readContract({
           address: contracts.oracle,
           abi: mockRiskOracleAbi,
@@ -224,6 +231,7 @@ export default function App() {
         }),
       ]);
       setVaultEth(bal);
+      setScoreSet(Boolean(has));
       setChainScore(Number(score));
 
       const listed: ChainPolicy[] = [];
@@ -365,13 +373,17 @@ export default function App() {
     } catch {
       if (amount.trim()) warnings.push("Enter a valid ETH amount.");
     }
-    if (chainScore > threshold) {
+    if (!scoreSet) {
+      warnings.push(
+        "No mock risk score is recorded for this agent id. executeAction will revert until Owner writes a score.",
+      );
+    } else if (chainScore > threshold) {
       warnings.push(
         `Mock risk score ${chainScore} exceeds the threshold of ${threshold}. The wallet will reject the next action.`,
       );
     }
     return warnings;
-  }, [amount, bound, chainScore, focusedChain, remainingWei, threshold]);
+  }, [amount, bound, chainScore, focusedChain, remainingWei, scoreSet, threshold]);
 
   function applyAddresses() {
     if (!isAddress(walletInput) || !isAddress(oracleInput) || !isAddress(tokenInput)) {
@@ -517,6 +529,7 @@ export default function App() {
       });
       await publicClient().waitForTransactionReceipt({ hash });
       setChainScore(sliderScore);
+      setScoreSet(true);
       const next = riskBadge(sliderScore, threshold);
       announce({
         tone: next.tone === "bad" ? "bad" : "ok",
@@ -620,9 +633,10 @@ export default function App() {
         contract can still hold several active hashes (listed in the seal).
       </p>
       <p className="mb-6 rounded-xl border border-rule bg-paper px-4 py-3 text-sm text-mute">
-        Track A trust: MockRiskOracle is a mock IERC-8126 stand-in (anyone can setScore on Anvil).
-        Entropy commit–reveal is stubbed. Agent OS MCP is off-chain camera fallback — it does not
-        bind or unbind this wallet. This is not ERC-8004 Final and not production. Details in{" "}
+        Track A trust: MockRiskOracle is a mock IERC-8126 stand-in (Owner-only setScore; unset
+        scores fail closed). Entropy commit–reveal is stubbed. Agent OS MCP is off-chain camera
+        fallback — it does not bind or unbind this wallet. This is not ERC-8004 Final and not
+        production. Details in{" "}
         <span className="font-mono text-cream">TRUST.md</span>.
       </p>
 
@@ -816,9 +830,11 @@ export default function App() {
               <div>
                 <h2 className="font-serif text-2xl">Risk</h2>
                 <p className="mt-1 text-sm text-mute">
-                  Mock ERC-8126 score. Lower is safer. The wallet rejects the next agent action only
-                  if the on-chain score is <span className="text-cream">greater than {threshold}</span>
-                  . To demo a revert, set the slider to 25 or higher, then write the oracle.
+                  Mock ERC-8126 score. Lower is safer. Unset scores fail closed — the wallet will
+                  not treat a missing score as 0. After a score is written, the wallet rejects the
+                  next agent action only if it is{" "}
+                  <span className="text-cream">greater than {threshold}</span>. To demo a revert,
+                  set the slider to 25 or higher, then write the oracle.
                 </p>
               </div>
               <span
@@ -834,10 +850,13 @@ export default function App() {
               </span>
             </div>
             <p className="mt-3 text-sm">
-              On-chain score {chainScore} · threshold {threshold} ·{" "}
-              {sliderScore > threshold
-                ? `slider ${sliderScore} would reject`
-                : `slider ${sliderScore} would still pass`}
+              {scoreSet
+                ? `On-chain score ${chainScore} · threshold ${threshold} · ${
+                    sliderScore > threshold
+                      ? `slider ${sliderScore} would reject`
+                      : `slider ${sliderScore} would still pass`
+                  }`
+                : `No score recorded for this agent id · executeAction will revert · slider ${sliderScore}`}
             </p>
             <input
               type="range"

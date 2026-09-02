@@ -208,6 +208,13 @@ export const mockRiskOracleAbi = [
   },
   {
     type: "function",
+    name: "hasScore",
+    stateMutability: "view",
+    inputs: [{ name: "agentId", type: "uint256" }],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
     name: "getLatestRiskScore",
     stateMutability: "view",
     inputs: [{ name: "agentId", type: "uint256" }],

@@ -209,8 +209,11 @@ contract BoundWallet is IAIAgentAuthenticatedWallet {
             spentOnDay[policyHash][day] = newSpend;
         }
 
-        // 9. MockRiskOracle.getLatestRiskScore(agentId) <= minVerificationScore
-        //    Reject if score EXCEEDS threshold (lower score = lower risk).
+        // 9. MockRiskOracle: fail closed if no score is recorded.
+        //    Then reject if score EXCEEDS threshold (lower score = lower risk).
+        if (!riskOracle.hasScore(policy.agentId)) {
+            revert PolicyViolation(policyHash, "risk score unset");
+        }
         uint8 score = riskOracle.getLatestRiskScore(policy.agentId);
         if (score > policy.minVerificationScore) {
             revert PolicyViolation(policyHash, "risk score exceeds threshold");
@@ -219,8 +222,9 @@ contract BoundWallet is IAIAgentAuthenticatedWallet {
         nonceUsed[policyHash][nonce] = true;
 
         // 10. Execute call, append hash-chained audit (previousHash), emit events
-        (bool ok,) = target.call{value: value}(data);
+        (bool ok, bytes memory ret) = target.call{value: value}(data);
         if (!ok) revert PolicyViolation(policyHash, "execution failed");
+        _requireErc20Success(policyHash, data, ret);
 
         auditEntryId = _appendAudit(policyHash, policy.agent, target, value, nonce, entropyCommitment, action);
         emit ActionExecuted(policyHash, policy.agent, target, value, auditEntryId);
@@ -294,6 +298,17 @@ contract BoundWallet is IAIAgentAuthenticatedWallet {
         }
         if (!isAllowedContract[policyHash][to]) {
             revert PolicyViolation(policyHash, "recipient not allowlisted");
+        }
+    }
+
+    /// @dev Empty returndata is treated as success (USDT-style). A 32-byte `false` is a failed transfer.
+    function _requireErc20Success(bytes32 policyHash, bytes calldata data, bytes memory ret) private pure {
+        if (data.length < 4) return;
+        bytes4 selector = bytes4(data[:4]);
+        if (selector != _TRANSFER_SELECTOR && selector != _TRANSFER_FROM_SELECTOR) return;
+        if (ret.length == 0) return;
+        if (ret.length != 32 || !abi.decode(ret, (bool))) {
+            revert PolicyViolation(policyHash, "execution failed");
         }
     }
 
@@ -379,6 +394,10 @@ contract BoundWallet is IAIAgentAuthenticatedWallet {
         }
         if (v < 27) v += 27;
         if (v != 27 && v != 28) return address(0);
+        // EIP-2: reject high-s signatures (malleability).
+        if (uint256(s) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) {
+            return address(0);
+        }
         return ecrecover(digest, v, r, s);
     }
 }

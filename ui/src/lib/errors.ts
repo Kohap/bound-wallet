@@ -77,6 +77,8 @@ function plainViolation(reason: string): string {
       return "This nonce was already used. Choose a new nonce for a new action.";
     case "risk score exceeds threshold":
       return "The mock risk score is above the policy threshold, so the wallet rejected the action.";
+    case "risk score unset":
+      return "No mock risk score is recorded for this agent id, so the wallet rejected the action.";
     case "not owner":
       return "Only the owner can register or revoke a policy. The agent cannot.";
     case "execution failed":
