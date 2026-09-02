@@ -4,7 +4,7 @@ Hour-2 Foundry + permission UI for **ERC-8196: AI Agent Authenticated Wallet** (
 
 The owner registers an **immutable policy**. An AI agent never holds the owner key. `executeAction` succeeds only if an EIP-712 `AgentAction` complies with that policy.
 
-Binance Agent OS Track A + ETHOnline. **Anvil only** (chainId 31337). No Discord/Telegram, no live CEX/Agent OS wiring, no mainnet, no trading bot.
+Binance Agent OS Track A + ETHOnline. **Anvil only** (chainId 31337). No Discord/Telegram, no live CEX trading, no mainnet, no trading bot. Agent OS MCP may be used for camera assign/revoke; it still does not call Bound Wallet.
 
 ## Layout
 
@@ -78,14 +78,14 @@ cd ui && npm install && npm run build
 
 ### 3-minute demo path (including Agent OS)
 
-Camera fallback for Track A until real MCP: [agent-os/TRACK-A-MCP-HUB.md](agent-os/TRACK-A-MCP-HUB.md). No live CEX trading.
+Dual-plane desk: [agent-os/TRACK-A-MCP-HUB.md](agent-os/TRACK-A-MCP-HUB.md). No live CEX trading.
 
-0. **Assign (Agent OS)** — Open [binance.com/agent-os](https://www.binance.com/agent-os). Show a subaccount and a permission grant (assign). Cut to Bound Wallet.
-1. **Register** — leave defaults (action `transfer`, 1 ETH per transaction, 5 ETH per day, recipient allowlisted, min score 20). Submit as Owner. Copy the policy hash (short label + full hash).
-2. **In-policy act** — Simulate agent amount `0.1` ETH. Preview is plain language. Sign as Agent / Owner relays. Activity log shows sequence 1 and a genesis previous hash.
-3. **Out-of-policy revert** — Amount `2` ETH. The wallet reverts: over the per-transaction cap. Nonce is not consumed.
-4. **Bump risk (optional)** — Slide mock risk **above** 20 and write the oracle. Simulate 0.1 ETH again; it reverts because the score exceeds the threshold. Slide back to 5 and write if you want a later success.
-5. **Revoke** — Owner `revokePolicy` with a reason. The next agent action fails as inactive. Optional: cut back to Agent OS and revoke the Binance permission.
+0. **Assign** — In Bound Wallet, **Mark assigned** (camera control; does not call Binance). Optional cut to [binance.com/agent-os](https://www.binance.com/agent-os) for a real subaccount grant, then back.
+1. **Mismatch** — Banner: *Assigned off-chain. Not bound. The agent cannot spend.*
+2. **Bind** — Leave the grant card defaults (transfer, 1 ETH / tx, 5 ETH / day, recipient allowlisted, mock score ≤ 20). **Bind on-chain as Owner.** Copy the policy hash.
+3. **In-policy act** — Simulate agent amount `0.1` ETH. Activity log shows sequence 1.
+4. **Out-of-policy revert** — Amount `2` ETH. Wallet reverts; nonce is not consumed.
+5. **Revoke** — Owner **Revoke on-chain (Agent OS unchanged)**. Banner: *Agent OS still assigned. Policy revoked. Spend is dead.* Do not treat Agent OS revoke as `revokePolicy`.
 
 ## Cast demo (hour 1, still valid)
 

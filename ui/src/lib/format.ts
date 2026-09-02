@@ -43,7 +43,7 @@ export function parseAddressList(raw: string): Address[] {
   return raw
     .split(/[\s,]+/)
     .map((s) => s.trim())
-    .filter(Boolean) as Address[];
+    .filter((s): s is Address => /^0x[0-9a-fA-F]{40}$/.test(s));
 }
 
 export function parseActionList(raw: string): string[] {
@@ -57,7 +57,12 @@ export function dayBucket(nowSeconds: bigint): bigint {
   return nowSeconds / 86400n;
 }
 
-export function riskBadge(score: number, threshold: number): { label: string; tone: "ok" | "warn" | "bad" } {
+export function riskBadge(
+  score: number,
+  threshold: number,
+  scoreSet = true,
+): { label: string; tone: "ok" | "warn" | "bad" } {
+  if (!scoreSet) return { label: "Unset · fail closed", tone: "bad" };
   if (score > threshold) return { label: "Would reject", tone: "bad" };
   if (score === 0) return { label: "Lowest risk", tone: "ok" };
   if (score <= 20) return { label: "Low risk", tone: "ok" };

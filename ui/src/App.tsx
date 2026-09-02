@@ -36,6 +36,8 @@ import {
   shortHash,
   toDatetimeLocal,
 } from "./lib/format";
+import { OS_STORAGE_KEY, chainPlane, type OsPlane } from "./lib/planes";
+import { DualPlaneBoard } from "./DualPlane";
 
 type Contracts = {
   wallet: Address;
@@ -148,6 +150,15 @@ export default function App() {
   const [sliderScore, setSliderScore] = useState(5);
   const [activity, setActivity] = useState<ActivityRow[]>([]);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [osPlane, setOsPlane] = useState<OsPlane>(() => {
+    try {
+      const raw = localStorage.getItem(OS_STORAGE_KEY);
+      return raw === "assigned" ? "assigned" : "unassigned";
+    } catch {
+      return "unassigned";
+    }
+  });
   const flashRef = useRef<HTMLDivElement>(null);
 
   const announce = useCallback((next: Flash) => {
@@ -186,8 +197,20 @@ export default function App() {
   }, [loadSaved]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ bound, contracts }));
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ bound, contracts }));
+    } catch {
+      /* ignore quota / private mode */
+    }
   }, [bound, contracts]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(OS_STORAGE_KEY, osPlane);
+    } catch {
+      /* ignore quota */
+    }
+  }, [osPlane]);
 
   const pingAnvil = useCallback(async () => {
     try {
@@ -338,16 +361,31 @@ export default function App() {
 
   const remainingWei = maxDayWei > 0n ? (maxDayWei > spentToday ? maxDayWei - spentToday : 0n) : null;
   const threshold = Number(bound?.minVerificationScore ?? draft.minVerificationScore ?? 20);
-  const badge = riskBadge(chainScore, threshold);
+  const badge = riskBadge(chainScore, Number.isFinite(threshold) ? threshold : 20, scoreSet);
   const focusedChain = bound
     ? (chainPolicies.find((p) => p.policyHash.toLowerCase() === bound.policyHash.toLowerCase()) ?? null)
     : null;
   const otherActive = chainPolicies.filter(
     (p) => p.isActive && (!bound || p.policyHash.toLowerCase() !== bound.policyHash.toLowerCase()),
   );
+  const onChainActive = Boolean(focusedChain?.isActive ?? bound?.isActive);
+  const currentChainPlane = chainPlane(Boolean(bound), onChainActive);
+  const bindHint = !contracts
+    ? "Load deployed contract addresses first."
+    : currentChainPlane === "active"
+      ? "This desk already focuses an active policyHash. Revoke it before binding another if you want a single live policy."
+      : otherActive.length > 0
+        ? `${otherActive.length} other active policyHash${otherActive.length === 1 ? "" : "es"} already on-chain. Binding adds another independent hash — it does not replace them.`
+        : undefined;
 
   const previewWarnings = useMemo(() => {
     const warnings: string[] = [];
+    if (osPlane === "assigned" && currentChainPlane === "unbound") {
+      warnings.push("Assigned off-chain. Not bound. The agent cannot spend until Owner binds a policy.");
+    }
+    if (osPlane === "assigned" && currentChainPlane === "revoked") {
+      warnings.push("Agent OS is still assigned. This policyHash is revoked. Spend is dead.");
+    }
     if (bound && focusedChain && !focusedChain.isActive) {
       warnings.push(
         "This policyHash is revoked. The agent cannot move funds under it. Other active hashes (if any) still can.",
@@ -383,7 +421,7 @@ export default function App() {
       );
     }
     return warnings;
-  }, [amount, bound, chainScore, focusedChain, remainingWei, scoreSet, threshold]);
+  }, [amount, bound, chainScore, currentChainPlane, focusedChain, osPlane, remainingWei, scoreSet, threshold]);
 
   function applyAddresses() {
     if (!isAddress(walletInput) || !isAddress(oracleInput) || !isAddress(tokenInput)) {
@@ -412,6 +450,10 @@ export default function App() {
       if (actions.length === 0) throw new Error("Add at least one allowed action, for example transfer.");
       if (allowed.length === 0) throw new Error("Add at least one allowed target (the recipient).");
       if (!isAddress(draft.agent)) throw new Error("Agent address is not valid.");
+      const scoreN = Number(draft.minVerificationScore);
+      if (!Number.isInteger(scoreN) || scoreN < 0 || scoreN > 255) {
+        throw new Error("Min verification score must be an integer from 0 to 255.");
+      }
       const maxTx = parseEther(draft.maxValuePerTx);
       if (maxTx <= 0n) throw new Error("Amount per transaction is required and must be greater than 0.");
       const maxDay = draft.maxValuePerDay.trim() === "" || Number(draft.maxValuePerDay) === 0
@@ -433,7 +475,7 @@ export default function App() {
         maxDay,
         validAfter,
         validUntil,
-        Number(draft.minVerificationScore),
+        scoreN,
       ] as const;
 
       const { result: returnedHash, request } = await client.simulateContract({
@@ -506,7 +548,10 @@ export default function App() {
       setBound({ ...bound, isActive: false });
       announce({
         tone: "ok",
-        text: `Revoked ${policyLabel(bound.policyHash)}. The agent cannot move funds under this hash. Other active policyHashes (if any) are unchanged.`,
+        text:
+          osPlane === "assigned"
+            ? `Revoked ${policyLabel(bound.policyHash)} on-chain. Agent OS is still marked assigned — it cannot stop executeAction. Spend under this hash is dead.`
+            : `Revoked ${policyLabel(bound.policyHash)}. The agent cannot move funds under this hash. Other active policyHashes (if any) are unchanged.`,
       });
       await refreshChain();
     } catch (err) {
@@ -530,7 +575,7 @@ export default function App() {
       await publicClient().waitForTransactionReceipt({ hash });
       setChainScore(sliderScore);
       setScoreSet(true);
-      const next = riskBadge(sliderScore, threshold);
+      const next = riskBadge(sliderScore, threshold, true);
       announce({
         tone: next.tone === "bad" ? "bad" : "ok",
         text:
@@ -547,7 +592,13 @@ export default function App() {
 
   async function simulateAgent() {
     if (!contracts || !bound) {
-      announce({ tone: "bad", text: "Register a policy before simulating the agent." });
+      announce({
+        tone: "bad",
+        text:
+          osPlane === "assigned"
+            ? "Assigned off-chain. Not bound. Register a policy before the agent can spend."
+            : "Register a policy before simulating the agent.",
+      });
       return;
     }
     setBusy("execute");
@@ -605,7 +656,12 @@ export default function App() {
     }
   }
 
-  const previewValidUntil = bound ? fromDatetimeLocal(bound.validUntil) : 0;
+  let previewValidUntil = 0;
+  try {
+    previewValidUntil = bound ? fromDatetimeLocal(bound.validUntil) : 0;
+  } catch {
+    previewValidUntil = 0;
+  }
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8 pb-16">
@@ -614,8 +670,8 @@ export default function App() {
           <p className="text-xs tracking-[0.22em] text-copper uppercase">ERC-8196 · Anvil 31337</p>
           <h1 className="font-serif text-4xl text-cream sm:text-5xl">Bound Wallet</h1>
           <p className="mt-2 max-w-xl text-sm text-mute">
-            The owner writes an immutable permission. The agent never holds the owner key. Actions
-            run only if they still fit the bound. Anvil demo — see the trust note below.
+            Two permission planes: Agent OS assigns, Bound Wallet binds. The agent never holds the
+            owner key. Only the on-chain policy stops executeAction. Anvil demo — see the trust note.
           </p>
         </div>
         <div className="text-sm text-mute">
@@ -628,17 +684,44 @@ export default function App() {
       </header>
 
       <p className="mb-6 text-sm text-mute">
-        Three-minute path: register a 1 ETH cap → transfer 0.1 ETH (success) → transfer 2 ETH (fail) →
-        bump risk above the threshold → revoke. MVP: one focused policyHash in this desk; the
-        contract can still hold several active hashes (listed in the seal).
+        Camera path: mark Agent OS assigned → Bind the grant → transfer 0.1 ETH → transfer 2 ETH
+        (fail) → revoke on-chain while assignment still looks live. MVP: one focused policyHash.
       </p>
       <p className="mb-6 rounded-xl border border-rule bg-paper px-4 py-3 text-sm text-mute">
-        Track A trust: MockRiskOracle is a mock IERC-8126 stand-in (Owner-only setScore; unset
-        scores fail closed). Entropy commit–reveal is stubbed. Agent OS MCP is off-chain camera
-        fallback — it does not bind or unbind this wallet. This is not ERC-8004 Final and not
-        production. Details in{" "}
+        Track A trust: Agent OS assign/revoke is off-chain (camera toggle or MCP). It does not bind
+        or unbind this wallet. MockRiskOracle is a mock IERC-8126 (Owner-only setScore; unset scores
+        fail closed). Entropy commit–reveal is stubbed. Not ERC-8004 Final. Details in{" "}
         <span className="font-mono text-cream">TRUST.md</span>.
       </p>
+
+      <DualPlaneBoard
+        os={osPlane}
+        onOs={setOsPlane}
+        chain={currentChainPlane}
+        policyHash={bound?.policyHash}
+        draft={draft}
+        owner={OWNER_ADDRESS}
+        agent={getAddress(isAddress(draft.agent) ? draft.agent : AGENT_ADDRESS)}
+        canBind={Boolean(contracts) && currentChainPlane !== "active"}
+        busy={busy}
+        onBind={() => void registerPolicy()}
+        bindHint={bindHint}
+      />
+
+      {flash && (
+        <div
+          ref={flashRef}
+          className={`sticky top-3 z-30 mb-6 rounded-xl border px-4 py-3 text-sm shadow-lg shadow-black/40 ${
+            flash.tone === "ok"
+              ? "border-ok/40 bg-paper text-ok"
+              : flash.tone === "bad"
+                ? "border-bad/40 bg-paper text-bad"
+                : "border-rule bg-paper text-mute"
+          }`}
+        >
+          {flash.text}
+        </div>
+      )}
 
       <section className="mb-6 grid gap-4 md:grid-cols-2">
         <IdentityCard
@@ -685,30 +768,32 @@ export default function App() {
         </div>
       </section>
 
-      {flash && (
-        <div
-          ref={flashRef}
-          className={`sticky top-3 z-30 mb-6 rounded-xl border px-4 py-3 text-sm shadow-lg shadow-black/40 ${
-            flash.tone === "ok"
-              ? "border-ok/40 bg-paper text-ok"
-              : flash.tone === "bad"
-                ? "border-bad/40 bg-paper text-bad"
-                : "border-rule bg-paper text-mute"
-          }`}
-        >
-          {flash.text}
-        </div>
-      )}
-
       <div className="grid gap-6 lg:grid-cols-12">
         <div className="space-y-6 lg:col-span-5">
           <section className="card">
-            <h2 className="font-serif text-2xl">Policy editor</h2>
-            <p className="mt-1 mb-4 text-sm text-mute">
-              Maps 1:1 to ERC-8196. Submitted as Owner. After registration the policy is immutable
-              except for revoke. The on-chain <span className="text-cream">policyHash</span> is the
-              registerPolicy return value (same key as getPolicy). Caps meter native value and
-              ERC-20 transfer/transferFrom amounts in raw 18-decimal units.
+            <button
+              type="button"
+              className="flex w-full items-start justify-between gap-3 text-left"
+              onClick={() => setEditorOpen((o) => !o)}
+              aria-expanded={editorOpen}
+            >
+              <div>
+                <h2 className="font-serif text-2xl">Policy editor</h2>
+                <p className="mt-1 text-sm text-mute">
+                  Advanced. Maps 1:1 to ERC-8196 fields. Bind uses these values. After registration
+                  the policy is immutable except for revoke.
+                </p>
+              </div>
+              <span className="mt-1 text-xs tracking-wide text-mute uppercase">
+                {editorOpen ? "Hide" : "Show"}
+              </span>
+            </button>
+            {editorOpen && (
+            <>
+            <p className="mt-3 mb-4 text-sm text-mute">
+              Caps meter native value and ERC-20 transfer/transferFrom amounts in raw 18-decimal
+              units. The on-chain <span className="text-cream">policyHash</span> is the
+              registerPolicy return value.
             </p>
             {otherActive.length > 0 && (
               <p className="mb-4 rounded-lg border border-warn/40 bg-ink px-3 py-2 text-sm text-warn">
@@ -823,6 +908,8 @@ export default function App() {
             >
               {busy === "register" ? "Registering…" : "Register policy as Owner"}
             </button>
+            </>
+            )}
           </section>
 
           <section className="card">
@@ -891,9 +978,10 @@ export default function App() {
             <section className="card">
               <h2 className="font-serif text-2xl">Revoke</h2>
               <p className="mt-1 mb-3 text-sm text-mute">
-                Only the owner can revoke. The agent cannot. Revoke applies to{" "}
-                <span className="font-mono text-cream">{bound ? policyLabel(bound.policyHash) : "this hash"}</span>{" "}
-                only — not to other active policies.
+                Only the owner can revoke. The agent cannot. This does{" "}
+                <span className="text-cream">not</span> unassign Agent OS — assignment can still look
+                live. Revoke applies to{" "}
+                <span className="font-mono text-cream">{policyLabel(bound.policyHash)}</span> only.
               </p>
               <label>
                 <span className="lbl">Reason</span>
@@ -905,7 +993,7 @@ export default function App() {
                 disabled={busy !== null || !bound.isActive}
                 onClick={() => void revokePolicy()}
               >
-                {busy === "revoke" ? "Revoking…" : bound.isActive ? "Revoke policy" : "Already revoked"}
+                {busy === "revoke" ? "Revoking…" : bound.isActive ? "Revoke on-chain (Agent OS unchanged)" : "Already revoked"}
               </button>
             </section>
           )}
@@ -995,9 +1083,6 @@ validUntil ${previewValidUntil}`}
             >
               {busy === "execute" ? "Submitting…" : "Sign as Agent and execute"}
             </button>
-            {flash && busy !== "execute" && (
-              <p className={`mt-3 text-sm ${flash.tone === "bad" ? "text-bad" : "text-ok"}`}>{flash.text}</p>
-            )}
           </section>
         </div>
       </div>
@@ -1083,8 +1168,9 @@ function PolicySeal({
     <section className="card">
       <h2 className="font-serif text-2xl">No policy bound yet</h2>
       <p className="mt-2 text-sm text-mute">
-        Register as Owner. The seal shows the on-chain <span className="text-cream">policyHash</span>{" "}
-        from registerPolicy / getPolicy — the same bytes32, not a decorative nickname.
+        Bind the grant above as Owner. The seal shows the on-chain{" "}
+        <span className="text-cream">policyHash</span> from registerPolicy / getPolicy — the same
+        bytes32, not a decorative nickname.
       </p>
       {allPolicies.length > 0 && <PolicyHashList policies={allPolicies} focused={null} />}
     </section>
