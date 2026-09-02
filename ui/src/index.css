@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Fraunces", ui-serif, Georgia, serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --color-ink: #14110e;
+  --color-paper: #1e1a16;
+  --color-rule: #3a322b;
+  --color-copper: #d4a574;
+  --color-cream: #f3eadc;
+  --color-mute: #9a8f82;
+  --color-ok: #5ea882;
+  --color-bad: #e07058;
+  --color-warn: #d4b45a;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #14110e;
+  color: #f3eadc;
+  font-family: var(--font-sans);
+}
+
+input,
+textarea,
+select,
+button {
+  font: inherit;
+}
+
+.field {
+  width: 100%;
+  border: 1px solid #3a322b;
+  background: #14110e;
+  color: #f3eadc;
+  border-radius: 0.4rem;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.9rem;
+}
+
+.field:focus {
+  outline: none;
+  border-color: #d4a574;
+}
+
+.lbl {
+  display: block;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #9a8f82;
+  margin-bottom: 0.35rem;
+}
+
+.card {
+  background: #1e1a16;
+  border: 1px solid #3a322b;
+  border-radius: 1rem;
+  padding: 1.15rem 1.2rem;
+}
+
+.btn {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.55rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-copper {
+  background: #d4a574;
+  color: #14110e;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: #f3eadc;
+  border: 1px solid #3a322b;
+}
+
+.btn-bad {
+  background: #e07058;
+  color: #14110e;
+}
