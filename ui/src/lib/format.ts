@@ -1,4 +1,4 @@
-import { formatEther, type Address } from "viem";
+import { formatEther, getAddress, isAddress, type Address } from "viem";
 
 export function shortHash(value: string, head = 6, tail = 4): string {
   if (value.length < head + tail + 2) return value;
@@ -39,11 +39,36 @@ export function fromDatetimeLocal(value: string): number {
   return Math.floor(ms / 1000);
 }
 
+/** Render-safe: invalid / empty datetime-local becomes 0 instead of throwing. */
+export function fromDatetimeLocalOrZero(value: string): number {
+  try {
+    return fromDatetimeLocal(value);
+  } catch {
+    return 0;
+  }
+}
+
 export function parseAddressList(raw: string): Address[] {
   return raw
     .split(/[\s,]+/)
     .map((s) => s.trim())
-    .filter(Boolean) as Address[];
+    .filter((s): s is Address => /^0x[0-9a-fA-F]{40}$/.test(s));
+}
+
+/** Fail closed: leftover tokens that are not 20-byte addresses throw. */
+export function parseAddressListStrict(raw: string): Address[] {
+  const tokens = raw
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const out: Address[] = [];
+  for (const token of tokens) {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(token)) {
+      throw new Error(`Not a 20-byte address: ${token}`);
+    }
+    out.push(getAddress(token));
+  }
+  return out;
 }
 
 export function parseActionList(raw: string): string[] {
@@ -53,11 +78,24 @@ export function parseActionList(raw: string): string[] {
     .filter(Boolean);
 }
 
+export function safeAddress(value: string, fallback: Address): Address {
+  try {
+    return isAddress(value) ? getAddress(value) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export function dayBucket(nowSeconds: bigint): bigint {
   return nowSeconds / 86400n;
 }
 
-export function riskBadge(score: number, threshold: number): { label: string; tone: "ok" | "warn" | "bad" } {
+export function riskBadge(
+  score: number,
+  threshold: number,
+  scoreSet = true,
+): { label: string; tone: "ok" | "warn" | "bad" } {
+  if (!scoreSet) return { label: "Unset · fail closed", tone: "bad" };
   if (score > threshold) return { label: "Would reject", tone: "bad" };
   if (score === 0) return { label: "Lowest risk", tone: "ok" };
   if (score <= 20) return { label: "Low risk", tone: "ok" };

@@ -35,6 +35,11 @@ button {
   font: inherit;
 }
 
+button,
+[role="button"] {
+  cursor: pointer;
+}
+
 .field {
   width: 100%;
   border: 1px solid #3a322b;
@@ -59,11 +64,24 @@ button {
   margin-bottom: 0.35rem;
 }
 
-.card {
+.card,
+.plane-card {
   background: #1e1a16;
   border: 1px solid #3a322b;
   border-radius: 1rem;
   padding: 1.15rem 1.2rem;
+}
+
+.plane-card {
+  box-shadow: inset 3px 0 0 #3a322b;
+}
+
+.plane-card[data-state="live"] {
+  box-shadow: inset 3px 0 0 #5ea882;
+}
+
+.plane-card[data-state="revoked"] {
+  box-shadow: inset 3px 0 0 #e07058;
 }
 
 .btn {

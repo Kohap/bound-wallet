@@ -7,11 +7,12 @@ Bound Wallet is an **Anvil-only demo** (chainId 31337). It is not a production w
 | Surface | Where it lives | What it actually is |
 | --- | --- | --- |
 | Bound Wallet `registerPolicy` / `executeAction` / `revokePolicy` | On-chain (Anvil) | ERC-8196-shaped policy module. Caps, allowlists, nonce, and revoke are enforced here. |
-| Permission UI | Off-chain browser | Convenience. It is **not** a security boundary. Caps are enforced by the contract. |
+| Permission UI | Off-chain browser | Convenience. Dual-plane Assign/Bind is **not** a security boundary. Caps are enforced by the contract. |
+| Agent OS assign toggle in the UI | Off-chain camera state | Local mark assigned/unassigned for the Track A take. It does **not** call Binance and does **not** register or revoke an on-chain policy. |
 | Binance Agent OS (assign / revoke) | Off-chain control plane | MCP may be connected for live Agent OS camera assign/revoke. Assigning or revoking in Agent OS does **not** register or revoke an on-chain policy. |
 | Agent OS MCP | Off-chain (may be connected) | Live camera assign/revoke via MCP is allowed. There is still **no** code path from Agent OS → `BoundWallet`. Bound Wallet remains the on-chain execution policy; Agent OS is the off-chain control plane. MCP tools are not the wallet’s kill switch. |
 
-The Track A story is: assign on Agent OS (MCP camera if connected), **bind the same idea on-chain** as an ERC-8196 policy, act in-policy, revert out-of-policy, owner `revokePolicy`. Those are two permission planes. Only the on-chain plane stops `executeAction`.
+The Track A story is: assign on Agent OS (MCP camera if connected, or the UI Assign toggle), **bind the same idea on-chain** as an ERC-8196 policy, act in-policy, revert out-of-policy, owner `revokePolicy` while Agent OS can still look assigned. Those are two permission planes. Only the on-chain plane stops `executeAction`. The desk shows the mismatch on purpose (Zodiac module vs modifier).
 
 ## Mock IERC-8126 (risk oracle)
 
