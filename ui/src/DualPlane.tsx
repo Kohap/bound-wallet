@@ -2,6 +2,7 @@ import { type Address } from "viem";
 import {
   type ChainPlane,
   type GrantDraft,
+  type GrantTemplateId,
   type Mismatch,
   type OsPlane,
   grantLines,
@@ -20,7 +21,9 @@ type Props = {
   canBind: boolean;
   busy: string | null;
   onBind: () => void;
+  onTemplate: (id: GrantTemplateId) => void;
   bindHint?: string;
+  hasToken: boolean;
 };
 
 export function DualPlaneBoard({
@@ -34,7 +37,9 @@ export function DualPlaneBoard({
   canBind,
   busy,
   onBind,
+  onTemplate,
   bindHint,
+  hasToken,
 }: Props) {
   const mismatch: Mismatch = planeMismatch(os, chain);
   const bannerClass =
@@ -153,6 +158,22 @@ export function DualPlaneBoard({
           One human-readable permission, then a single Owner bind. Same bytes as{" "}
           <span className="font-mono text-cream">registerPolicy</span>. Not a second policy.
         </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button type="button" className="btn btn-ghost px-3 py-1 text-xs" onClick={() => onTemplate("eth")}>
+            ETH pay
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost px-3 py-1 text-xs"
+            onClick={() => onTemplate("token")}
+            title={hasToken ? "Allowlist recipient and MockERC20" : "Load contract addresses first"}
+          >
+            ETH + MOCK
+          </button>
+          <button type="button" className="btn btn-ghost px-3 py-1 text-xs" onClick={() => onTemplate("tight")}>
+            Tight session
+          </button>
+        </div>
         <p className="mt-4 text-sm text-cream">
           Allow Agent {shortHash(draft.agent || agent, 4, 4)}
           {draft.agentId ? ` · id ${draft.agentId}` : ""} to:

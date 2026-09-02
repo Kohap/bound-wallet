@@ -62,6 +62,37 @@ export const boundWalletAbi = [
   },
   {
     type: "function",
+    name: "revokeAll",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "reason", type: "string" }],
+    outputs: [{ name: "revoked", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "revealEntropy",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "entryId", type: "bytes32" },
+      { name: "secret", type: "bytes32" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "entropyRevealed",
+    stateMutability: "view",
+    inputs: [{ name: "entryId", type: "bytes32" }],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "policyHashAt",
+    stateMutability: "view",
+    inputs: [{ name: "index", type: "uint256" }],
+    outputs: [{ type: "bytes32" }],
+  },
+  {
+    type: "function",
     name: "getPolicy",
     stateMutability: "view",
     inputs: [{ name: "policyHash", type: "bytes32" }],
@@ -94,6 +125,16 @@ export const boundWalletAbi = [
       { name: "day", type: "uint256" },
     ],
     outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "nonceUsed",
+    stateMutability: "view",
+    inputs: [
+      { name: "policyHash", type: "bytes32" },
+      { name: "nonce", type: "uint256" },
+    ],
+    outputs: [{ type: "bool" }],
   },
   {
     type: "function",
@@ -155,6 +196,11 @@ export const boundWalletAbi = [
     ],
   },
   {
+    type: "error",
+    name: "EntropyVerificationFailed",
+    inputs: [{ name: "entryId", type: "bytes32" }],
+  },
+  {
     type: "event",
     name: "PolicyRegistered",
     inputs: [
@@ -191,6 +237,43 @@ export const boundWalletAbi = [
       { name: "sequence", type: "uint256", indexed: false },
       { name: "sessionId", type: "bytes32", indexed: false },
       { name: "actionType", type: "string", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "EntropyRevealed",
+    inputs: [
+      { name: "entryId", type: "bytes32", indexed: true },
+      { name: "secret", type: "bytes32", indexed: false },
+    ],
+  },
+] as const;
+
+export const mockErc20Abi = [
+  {
+    type: "function",
+    name: "transfer",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "to", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "event",
+    name: "Transfer",
+    inputs: [
+      { name: "from", type: "address", indexed: true },
+      { name: "to", type: "address", indexed: true },
+      { name: "value", type: "uint256", indexed: false },
     ],
   },
 ] as const;
