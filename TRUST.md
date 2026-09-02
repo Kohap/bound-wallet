@@ -8,10 +8,10 @@ Bound Wallet is an **Anvil-only demo** (chainId 31337). It is not a production w
 | --- | --- | --- |
 | Bound Wallet `registerPolicy` / `executeAction` / `revokePolicy` | On-chain (Anvil) | ERC-8196-shaped policy module. Caps, allowlists, nonce, and revoke are enforced here. |
 | Permission UI | Off-chain browser | Convenience. It is **not** a security boundary. Caps are enforced by the contract. |
-| Binance Agent OS (assign / revoke on binance.com) | Off-chain product UI | **Camera fallback** for Track A until a real MCP exists. There is **no** code path from Agent OS to `BoundWallet`. Assigning or revoking in Agent OS does **not** register or revoke an on-chain policy. |
-| Agent OS MCP | Not wired | Live MCP assign/revoke is out of scope. Do not treat MCP tools as the wallet’s kill switch. |
+| Binance Agent OS (assign / revoke) | Off-chain control plane | MCP may be connected for live Agent OS camera assign/revoke. Assigning or revoking in Agent OS does **not** register or revoke an on-chain policy. |
+| Agent OS MCP | Off-chain (may be connected) | Live camera assign/revoke via MCP is allowed. There is still **no** code path from Agent OS → `BoundWallet`. Bound Wallet remains the on-chain execution policy; Agent OS is the off-chain control plane. MCP tools are not the wallet’s kill switch. |
 
-The Track A story is: show assignment on Agent OS, **bind the same idea on-chain** as an ERC-8196 policy, act in-policy, revert out-of-policy, owner `revokePolicy`. Those are two permission planes. Only the on-chain plane stops `executeAction`.
+The Track A story is: assign on Agent OS (MCP camera if connected), **bind the same idea on-chain** as an ERC-8196 policy, act in-policy, revert out-of-policy, owner `revokePolicy`. Those are two permission planes. Only the on-chain plane stops `executeAction`.
 
 ## Mock IERC-8126 (risk oracle)
 
@@ -34,7 +34,7 @@ This repository:
 - Implements an ERC-8196 *hour-1/2* wallet (`IAIAgentAuthenticatedWallet` plus a documented `action` spec gap).
 - Does **not** implement ERC-8004. Do not describe Bound Wallet as ERC-8004 Final, ERC-8004 production, or an identity/reputation registry.
 - Does **not** implement ERC-4337 account validation (`IAccount` / `validateUserOp`).
-- Does **not** wire live CEX trading or production Agent OS APIs.
+- Does **not** wire live CEX trading.
 
 Anvil default keys in the UI and README are **publicly known**. Pointing this stack at a public RPC with those keys is immediate theft.
 
