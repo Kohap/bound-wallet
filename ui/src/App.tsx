@@ -9,6 +9,7 @@ import {
   isAddress,
   parseEther,
   parseEventLogs,
+  zeroAddress,
 } from "viem";
 import { foundry } from "viem/chains";
 import { agentActionTypes, boundWalletAbi, eip712Domain, mockRiskOracleAbi } from "./lib/abi";
@@ -57,6 +58,15 @@ type PolicyDraft = {
 
 type BoundPolicy = PolicyDraft & {
   policyHash: Hex;
+  isActive: boolean;
+};
+
+type ChainPolicy = {
+  policyHash: Hex;
+  agent: Address;
+  owner: Address;
+  maxValuePerTx: bigint;
+  validUntil: bigint;
   isActive: boolean;
 };
 
@@ -127,12 +137,14 @@ export default function App() {
   const [anvilOk, setAnvilOk] = useState<boolean | null>(null);
   const [draft, setDraft] = useState<PolicyDraft>(defaultDraft);
   const [bound, setBound] = useState<BoundPolicy | null>(null);
+  const [chainPolicies, setChainPolicies] = useState<ChainPolicy[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [flash, setFlash] = useState<Flash>(null);
   const [revokeReason, setRevokeReason] = useState("Owner containment — stop this agent now");
   const [vaultEth, setVaultEth] = useState<bigint>(0n);
   const [spentToday, setSpentToday] = useState<bigint>(0n);
   const [chainScore, setChainScore] = useState(5);
+  const [scoreSet, setScoreSet] = useState(true);
   const [sliderScore, setSliderScore] = useState(5);
   const [activity, setActivity] = useState<ActivityRow[]>([]);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -196,8 +208,14 @@ export default function App() {
     if (!contracts) return;
     const client = publicClient();
     try {
-      const [bal, score, block] = await Promise.all([
+      const [bal, has, score, block, registered] = await Promise.all([
         client.getBalance({ address: contracts.wallet }),
+        client.readContract({
+          address: contracts.oracle,
+          abi: mockRiskOracleAbi,
+          functionName: "hasScore",
+          args: [BigInt(draft.agentId || "1")],
+        }),
         client.readContract({
           address: contracts.oracle,
           abi: mockRiskOracleAbi,
@@ -205,9 +223,38 @@ export default function App() {
           args: [BigInt(draft.agentId || "1")],
         }),
         client.getBlock(),
+        client.getContractEvents({
+          address: contracts.wallet,
+          abi: boundWalletAbi,
+          eventName: "PolicyRegistered",
+          fromBlock: 0n,
+        }),
       ]);
       setVaultEth(bal);
+      setScoreSet(Boolean(has));
       setChainScore(Number(score));
+
+      const listed: ChainPolicy[] = [];
+      for (const ev of registered) {
+        const policyHash = ev.args.policyHash;
+        if (!policyHash) continue;
+        const onChain = await client.readContract({
+          address: contracts.wallet,
+          abi: boundWalletAbi,
+          functionName: "getPolicy",
+          args: [policyHash],
+        });
+        listed.push({
+          policyHash,
+          agent: onChain[0],
+          owner: onChain[1],
+          maxValuePerTx: onChain[2],
+          validUntil: onChain[3],
+          isActive: onChain[4],
+        });
+      }
+      setChainPolicies(listed);
+
       if (bound) {
         const spent = await client.readContract({
           address: contracts.wallet,
@@ -216,16 +263,15 @@ export default function App() {
           args: [bound.policyHash, dayBucket(block.timestamp)],
         });
         setSpentToday(spent);
-        const onChain = await client.readContract({
-          address: contracts.wallet,
-          abi: boundWalletAbi,
-          functionName: "getPolicy",
-          args: [bound.policyHash],
-        });
-        setBound((prev) => {
-          if (!prev || prev.isActive === onChain[4]) return prev;
-          return { ...prev, isActive: onChain[4] };
-        });
+        const match = listed.find(
+          (p) => p.policyHash.toLowerCase() === bound.policyHash.toLowerCase(),
+        );
+        if (match) {
+          setBound((prev) => {
+            if (!prev || prev.isActive === match.isActive) return prev;
+            return { ...prev, isActive: match.isActive };
+          });
+        }
       }
     } catch {
       /* keep last good state */
@@ -293,17 +339,30 @@ export default function App() {
   const remainingWei = maxDayWei > 0n ? (maxDayWei > spentToday ? maxDayWei - spentToday : 0n) : null;
   const threshold = Number(bound?.minVerificationScore ?? draft.minVerificationScore ?? 20);
   const badge = riskBadge(chainScore, threshold);
+  const focusedChain = bound
+    ? (chainPolicies.find((p) => p.policyHash.toLowerCase() === bound.policyHash.toLowerCase()) ?? null)
+    : null;
+  const otherActive = chainPolicies.filter(
+    (p) => p.isActive && (!bound || p.policyHash.toLowerCase() !== bound.policyHash.toLowerCase()),
+  );
 
   const previewWarnings = useMemo(() => {
     const warnings: string[] = [];
-    if (bound && !bound.isActive) {
-      warnings.push("This policy is revoked. The agent cannot move funds.");
+    if (bound && focusedChain && !focusedChain.isActive) {
+      warnings.push(
+        "This policyHash is revoked. The agent cannot move funds under it. Other active hashes (if any) still can.",
+      );
+    } else if (bound && !bound.isActive) {
+      warnings.push(
+        "This policyHash is revoked. The agent cannot move funds under it. Other active hashes (if any) still can.",
+      );
     }
     try {
       const value = parseEther(amount || "0");
-      if (bound && value > parseEther(bound.maxValuePerTx || "0")) {
+      const cap = focusedChain?.maxValuePerTx ?? (bound ? parseEther(bound.maxValuePerTx || "0") : 0n);
+      if (bound && value > cap) {
         warnings.push(
-          `Amount ${amount} ETH is over the per-transaction cap of ${bound.maxValuePerTx} ETH. The wallet will reject it.`,
+          `Amount ${amount} ETH is over the per-transaction cap of ${formatEth(cap)}. The wallet will reject it.`,
         );
       }
       if (bound && remainingWei !== null && value > remainingWei) {
@@ -314,13 +373,17 @@ export default function App() {
     } catch {
       if (amount.trim()) warnings.push("Enter a valid ETH amount.");
     }
-    if (chainScore > threshold) {
+    if (!scoreSet) {
+      warnings.push(
+        "No mock risk score is recorded for this agent id. executeAction will revert until Owner writes a score.",
+      );
+    } else if (chainScore > threshold) {
       warnings.push(
         `Mock risk score ${chainScore} exceeds the threshold of ${threshold}. The wallet will reject the next action.`,
       );
     }
     return warnings;
-  }, [amount, bound, chainScore, remainingWei, threshold]);
+  }, [amount, bound, chainScore, focusedChain, remainingWei, scoreSet, threshold]);
 
   function applyAddresses() {
     if (!isAddress(walletInput) || !isAddress(oracleInput) || !isAddress(tokenInput)) {
@@ -359,36 +422,66 @@ export default function App() {
       if (validUntil <= validAfter) throw new Error("Expiry must be after the start of the validity period.");
 
       const wallet = ownerWallet();
-      const hash = await wallet.writeContract({
+      const client = publicClient();
+      const args = [
+        getAddress(draft.agent),
+        BigInt(draft.agentId),
+        actions,
+        allowed,
+        blocked,
+        maxTx,
+        maxDay,
+        validAfter,
+        validUntil,
+        Number(draft.minVerificationScore),
+      ] as const;
+
+      const { result: returnedHash, request } = await client.simulateContract({
+        account: OWNER_ACCOUNT,
         address: contracts.wallet,
         abi: boundWalletAbi,
         functionName: "registerPolicy",
-        args: [
-          getAddress(draft.agent),
-          BigInt(draft.agentId),
-          actions,
-          allowed,
-          blocked,
-          maxTx,
-          maxDay,
-          validAfter,
-          validUntil,
-          Number(draft.minVerificationScore),
-        ],
+        args,
       });
-      const receipt = await publicClient().waitForTransactionReceipt({ hash });
+
+      const hash = await wallet.writeContract(request);
+      const receipt = await client.waitForTransactionReceipt({ hash });
       const parsed = parseEventLogs({
         abi: boundWalletAbi,
         logs: receipt.logs,
         eventName: "PolicyRegistered",
       });
-      const policyHash = parsed[0]?.args.policyHash;
-      if (!policyHash) throw new Error("Registered, but the policy hash was not in the receipt.");
-      setBound({ ...draft, policyHash, isActive: true });
+      const eventHash = parsed[0]?.args.policyHash;
+      if (!eventHash) throw new Error("Registered, but PolicyRegistered did not include policyHash.");
+      if (eventHash.toLowerCase() !== returnedHash.toLowerCase()) {
+        throw new Error(
+          `policyHash mismatch: registerPolicy returned ${returnedHash} but PolicyRegistered emitted ${eventHash}.`,
+        );
+      }
+      const onChain = await client.readContract({
+        address: contracts.wallet,
+        abi: boundWalletAbi,
+        functionName: "getPolicy",
+        args: [eventHash],
+      });
+      if (onChain[0].toLowerCase() === zeroAddress) {
+        throw new Error("getPolicy does not recognize this policyHash.");
+      }
+      if (onChain[0].toLowerCase() !== getAddress(draft.agent).toLowerCase()) {
+        throw new Error("getPolicy agent does not match the registerPolicy agent.");
+      }
+      if (onChain[2] !== maxTx) {
+        throw new Error("getPolicy maxValuePerTx does not match the amount registered.");
+      }
+      setBound({ ...draft, policyHash: eventHash, isActive: onChain[4] });
       setNonce("1");
+      const extraActive = chainPolicies.filter((p) => p.isActive).length;
       announce({
-        tone: "ok",
-        text: `Policy registered. ${policyLabel(policyHash)} now governs the agent.`,
+        tone: extraActive > 0 ? "mute" : "ok",
+        text:
+          extraActive > 0
+            ? `Registered ${policyLabel(eventHash)}. This is an additional on-chain policyHash — it does not replace other active policies. Each hash has its own caps.`
+            : `Policy registered. ${policyLabel(eventHash)} is the on-chain key (registerPolicy return = PolicyRegistered = getPolicy).`,
       });
       await refreshChain();
     } catch (err) {
@@ -411,7 +504,10 @@ export default function App() {
       });
       await publicClient().waitForTransactionReceipt({ hash });
       setBound({ ...bound, isActive: false });
-      announce({ tone: "ok", text: "Policy revoked. The agent can no longer move funds under this bound." });
+      announce({
+        tone: "ok",
+        text: `Revoked ${policyLabel(bound.policyHash)}. The agent cannot move funds under this hash. Other active policyHashes (if any) are unchanged.`,
+      });
       await refreshChain();
     } catch (err) {
       announce({ tone: "bad", text: explainRevert(err) });
@@ -433,6 +529,7 @@ export default function App() {
       });
       await publicClient().waitForTransactionReceipt({ hash });
       setChainScore(sliderScore);
+      setScoreSet(true);
       const next = riskBadge(sliderScore, threshold);
       announce({
         tone: next.tone === "bad" ? "bad" : "ok",
@@ -518,7 +615,7 @@ export default function App() {
           <h1 className="font-serif text-4xl text-cream sm:text-5xl">Bound Wallet</h1>
           <p className="mt-2 max-w-xl text-sm text-mute">
             The owner writes an immutable permission. The agent never holds the owner key. Actions
-            run only if they still fit the bound.
+            run only if they still fit the bound. Anvil demo — see the trust note below.
           </p>
         </div>
         <div className="text-sm text-mute">
@@ -532,7 +629,15 @@ export default function App() {
 
       <p className="mb-6 text-sm text-mute">
         Three-minute path: register a 1 ETH cap → transfer 0.1 ETH (success) → transfer 2 ETH (fail) →
-        bump risk above the threshold → revoke.
+        bump risk above the threshold → revoke. MVP: one focused policyHash in this desk; the
+        contract can still hold several active hashes (listed in the seal).
+      </p>
+      <p className="mb-6 rounded-xl border border-rule bg-paper px-4 py-3 text-sm text-mute">
+        Track A trust: MockRiskOracle is a mock IERC-8126 stand-in (Owner-only setScore; unset
+        scores fail closed). Entropy commit–reveal is stubbed. Agent OS MCP is off-chain camera
+        fallback — it does not bind or unbind this wallet. This is not ERC-8004 Final and not
+        production. Details in{" "}
+        <span className="font-mono text-cream">TRUST.md</span>.
       </p>
 
       <section className="mb-6 grid gap-4 md:grid-cols-2">
@@ -601,8 +706,24 @@ export default function App() {
             <h2 className="font-serif text-2xl">Policy editor</h2>
             <p className="mt-1 mb-4 text-sm text-mute">
               Maps 1:1 to ERC-8196. Submitted as Owner. After registration the policy is immutable
-              except for revoke.
+              except for revoke. The on-chain <span className="text-cream">policyHash</span> is the
+              registerPolicy return value (same key as getPolicy). Caps meter native value and
+              ERC-20 transfer/transferFrom amounts in raw 18-decimal units.
             </p>
+            {otherActive.length > 0 && (
+              <p className="mb-4 rounded-lg border border-warn/40 bg-ink px-3 py-2 text-sm text-warn">
+                {otherActive.length} other active policyHash
+                {otherActive.length === 1 ? "" : "es"} already on-chain. Registering again creates
+                another independent policy — it does not replace the previous hash. MVP: revoke
+                first if you want a single live policy.
+              </p>
+            )}
+            {bound?.isActive && otherActive.length === 0 && (
+              <p className="mb-4 rounded-lg border border-rule bg-ink px-3 py-2 text-sm text-mute">
+                MVP: this desk focuses one active policy at a time. Registering again adds a second
+                on-chain policyHash with its own caps.
+              </p>
+            )}
             <div className="grid gap-3">
               <label>
                 <span className="lbl">Allowed actions</span>
@@ -709,9 +830,11 @@ export default function App() {
               <div>
                 <h2 className="font-serif text-2xl">Risk</h2>
                 <p className="mt-1 text-sm text-mute">
-                  Mock ERC-8126 score. Lower is safer. The wallet rejects the next agent action only
-                  if the on-chain score is <span className="text-cream">greater than {threshold}</span>
-                  . To demo a revert, set the slider to 25 or higher, then write the oracle.
+                  Mock ERC-8126 score. Lower is safer. Unset scores fail closed — the wallet will
+                  not treat a missing score as 0. After a score is written, the wallet rejects the
+                  next agent action only if it is{" "}
+                  <span className="text-cream">greater than {threshold}</span>. To demo a revert,
+                  set the slider to 25 or higher, then write the oracle.
                 </p>
               </div>
               <span
@@ -727,10 +850,13 @@ export default function App() {
               </span>
             </div>
             <p className="mt-3 text-sm">
-              On-chain score {chainScore} · threshold {threshold} ·{" "}
-              {sliderScore > threshold
-                ? `slider ${sliderScore} would reject`
-                : `slider ${sliderScore} would still pass`}
+              {scoreSet
+                ? `On-chain score ${chainScore} · threshold ${threshold} · ${
+                    sliderScore > threshold
+                      ? `slider ${sliderScore} would reject`
+                      : `slider ${sliderScore} would still pass`
+                  }`
+                : `No score recorded for this agent id · executeAction will revert · slider ${sliderScore}`}
             </p>
             <input
               type="range"
@@ -752,13 +878,22 @@ export default function App() {
         </div>
 
         <div className="space-y-6 lg:col-span-7">
-          <PolicySeal bound={bound} remainingWei={remainingWei} spentToday={spentToday} />
+          <PolicySeal
+            bound={bound}
+            chain={focusedChain}
+            allPolicies={chainPolicies}
+            remainingWei={remainingWei}
+            spentToday={spentToday}
+            tokenAddress={contracts?.token}
+          />
 
           {bound && (
             <section className="card">
               <h2 className="font-serif text-2xl">Revoke</h2>
               <p className="mt-1 mb-3 text-sm text-mute">
-                Only the owner can revoke. The agent cannot. This is the kill switch.
+                Only the owner can revoke. The agent cannot. Revoke applies to{" "}
+                <span className="font-mono text-cream">{bound ? policyLabel(bound.policyHash) : "this hash"}</span>{" "}
+                only — not to other active policies.
               </p>
               <label>
                 <span className="lbl">Reason</span>
@@ -780,6 +915,8 @@ export default function App() {
             <p className="mt-1 mb-4 text-sm text-mute">
               Builds and signs EIP-712 AgentAction with the Agent key, then the Owner relays{" "}
               <span className="text-cream">executeAction</span> including the trailing action string.
+              This simulate path sends <span className="font-mono text-cream">data = 0x</span> (native
+              ETH). ERC-20 transfer/transferFrom in calldata is metered on-chain, not from this form.
             </p>
             <div className="grid gap-3 sm:grid-cols-2">
               <label>
@@ -881,6 +1018,7 @@ validUntil ${previewValidUntil}`}
                   <th className="pb-2 pr-3 font-medium">Action</th>
                   <th className="pb-2 pr-3 font-medium">Target</th>
                   <th className="pb-2 pr-3 font-medium">Amount</th>
+                  <th className="pb-2 pr-3 font-medium">policyHash</th>
                   <th className="pb-2 pr-3 font-medium">Previous</th>
                   <th className="pb-2 font-medium">Entry</th>
                 </tr>
@@ -896,6 +1034,7 @@ validUntil ${previewValidUntil}`}
                       <td className="py-3 pr-3">{actionInEnglish(row.action)}</td>
                       <td className="py-3 pr-3 font-mono text-xs">{shortHash(row.target, 4, 4)}</td>
                       <td className="py-3 pr-3">{formatEth(row.value)}</td>
+                      <td className="py-3 pr-3 font-mono text-xs">{shortHash(row.policyHash)}</td>
                       <td className="py-3 pr-3 font-mono text-xs">
                         {genesis ? "genesis" : shortHash(row.previousHash)}
                         {linked && <span className="ml-2 text-ok">links seq {prev.sequence.toString()}</span>}
@@ -927,50 +1066,121 @@ function IdentityCard({ role, blurb, address }: { role: string; blurb: string; a
 
 function PolicySeal({
   bound,
+  chain,
+  allPolicies,
   remainingWei,
   spentToday,
+  tokenAddress,
 }: {
   bound: BoundPolicy | null;
+  chain: ChainPolicy | null;
+  allPolicies: ChainPolicy[];
   remainingWei: bigint | null;
   spentToday: bigint;
+  tokenAddress?: Address;
 }) {
-  if (!bound) {
-    return (
-      <section className="card">
-        <h2 className="font-serif text-2xl">No policy bound yet</h2>
-        <p className="mt-2 text-sm text-mute">
-          Register as Owner. The policy hash will show here in plain language, short and full.
-        </p>
-      </section>
-    );
-  }
+  const empty = (
+    <section className="card">
+      <h2 className="font-serif text-2xl">No policy bound yet</h2>
+      <p className="mt-2 text-sm text-mute">
+        Register as Owner. The seal shows the on-chain <span className="text-cream">policyHash</span>{" "}
+        from registerPolicy / getPolicy — the same bytes32, not a decorative nickname.
+      </p>
+      {allPolicies.length > 0 && <PolicyHashList policies={allPolicies} focused={null} />}
+    </section>
+  );
+
+  if (!bound) return empty;
+
+  const hashMismatch = Boolean(bound && !chain);
+  const status = chain ? (chain.isActive ? "Active" : "Revoked") : "getPolicy empty";
+  const capTx = chain ? formatEth(chain.maxValuePerTx) : `${bound.maxValuePerTx} ETH (local only)`;
+  const expiry = chain ? formatWhen(chain.validUntil) : formatWhen(fromDatetimeLocal(bound.validUntil));
+  const allowed = parseAddressList(bound.allowedContracts);
+  const tokenListed =
+    Boolean(tokenAddress) &&
+    allowed.some((a) => tokenAddress && a.toLowerCase() === tokenAddress.toLowerCase());
+  const asset = tokenListed
+    ? "Native ETH (value) + ERC-20 transfer/transferFrom amounts in calldata. Raw token units, no decimal conversion (18-decimal assumption; MockERC20 is 18)."
+    : "Native ETH via executeAction value. Token is not in this policy’s allowlist. If you allowlist an ERC-20, transfer/transferFrom amounts are metered in raw 18-decimal units.";
 
   return (
     <section className="card">
-      <p className="text-xs tracking-[0.18em] text-copper uppercase">
-        {bound.isActive ? "Active bound" : "Revoked"}
-      </p>
+      <p className="text-xs tracking-[0.18em] text-copper uppercase">{status}</p>
       <h2 className="font-serif text-3xl leading-tight text-cream">{policyLabel(bound.policyHash)}</h2>
-      <p className="mt-2 text-sm text-mute">Always refer to this policy by its hash. It does not change.</p>
+      <p className="mt-2 text-sm text-mute">
+        Short form of the same on-chain policyHash (registerPolicy return = PolicyRegistered =
+        getPolicy key). Not a second hash.
+      </p>
+      {hashMismatch && (
+        <p className="mt-3 rounded-lg border border-bad/40 bg-ink px-3 py-2 text-sm text-bad">
+          getPolicy does not return this hash. The seal will not invent a substitute. Re-register or
+          load the address of the wallet that emitted it.
+        </p>
+      )}
       <div className="mt-4 rounded-lg border border-rule bg-ink px-3 py-3">
-        <span className="lbl">Full policy hash</span>
+        <span className="lbl">On-chain policyHash</span>
         <p className="font-mono text-xs leading-6 break-all">{bound.policyHash}</p>
-        <CopyButton value={bound.policyHash} label="Copy full policy hash" />
+        <CopyButton value={bound.policyHash} label="Copy full policyHash" />
       </div>
+      <p className="mt-4 text-xs tracking-[0.12em] text-mute uppercase">
+        MVP — one focused policy at a time
+      </p>
+      <p className="mt-1 text-sm text-mute">
+        This desk edits and simulates against the hash above. The contract may hold several active
+        policies; each has its own policyHash and caps. Revoke does not cover the others.
+      </p>
+      <PolicyHashList policies={allPolicies} focused={bound.policyHash} />
       <dl className="mt-4 grid gap-2 text-sm sm:grid-cols-2">
-        <Row k="Asset" v="Native ETH" />
-        <Row k="Amount per transaction" v={`${bound.maxValuePerTx} ETH`} />
+        <Row k="getPolicy agent" v={chain ? chain.agent : "—"} />
+        <Row k="getPolicy owner" v={chain ? chain.owner : "—"} />
+        <Row k="Amount per transaction" v={capTx} />
         <Row
           k="Period"
-          v={Number(bound.maxValuePerDay) > 0 ? `${bound.maxValuePerDay} ETH per day` : "No daily cap"}
+          v={Number(bound.maxValuePerDay) > 0 ? `${bound.maxValuePerDay} ETH per day (register form; not in getPolicy)` : "No daily cap"}
         />
-        <Row k="Expiry" v={formatWhen(fromDatetimeLocal(bound.validUntil))} />
+        <Row k="Expiry (getPolicy)" v={expiry} />
         {remainingWei !== null && (
           <Row k="Remaining today" v={`${formatEth(remainingWei)} (${formatEth(spentToday)} spent)`} />
         )}
-        <Row k="Status" v={bound.isActive ? "Active" : "Revoked"} />
+        <Row k="Status (getPolicy)" v={status} />
+        <Row k="Allowlist (registered)" v={allowed.length ? allowed.join(", ") : "—"} />
+        <Row k="Metered assets" v={asset} />
       </dl>
     </section>
+  );
+}
+
+function PolicyHashList({
+  policies,
+  focused,
+}: {
+  policies: ChainPolicy[];
+  focused: Hex | null;
+}) {
+  if (policies.length === 0) return null;
+  return (
+    <div className="mt-3 rounded-lg border border-rule bg-ink px-3 py-3">
+      <span className="lbl">On-chain policyHashes</span>
+      <ul className="mt-2 space-y-2 text-xs">
+        {policies.map((p) => {
+          const isFocus = focused && p.policyHash.toLowerCase() === focused.toLowerCase();
+          return (
+            <li key={p.policyHash} className="font-mono break-all">
+              <span className={p.isActive ? "text-ok" : "text-mute"}>
+                {p.isActive ? "active" : "revoked"}
+              </span>
+              {" · "}
+              <span className="text-cream">{p.policyHash}</span>
+              {isFocus && <span className="ml-2 text-copper">focused</span>}
+              <span className="mt-0.5 block text-mute">
+                cap {formatEth(p.maxValuePerTx)} · expiry {formatWhen(p.validUntil)}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 

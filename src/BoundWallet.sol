@@ -7,11 +7,23 @@ import {IRiskOracle} from "./mocks/MockRiskOracle.sol";
 /// @title BoundWallet
 /// @notice Hour-1 ERC-8196 MVP: owner registers an immutable policy; an AI agent never holds the
 ///         owner key; `executeAction` succeeds only if an EIP-712 `AgentAction` complies with that policy.
+///
+/// @dev ERC-20 metering / decimals: when `data` is non-empty, it must be a standard ABI-encoded
+///      `transfer(address,uint256)` or `transferFrom(address,address,uint256)`. The decoded token
+///      `amount` is added to native `value` and checked against `maxValuePerTx` / `maxValuePerDay`.
+///      Amounts are the token's **raw units with no decimal conversion**. That is 1:1 with wei only
+///      for 18-decimal tokens (this repo's MockERC20). A 6-decimal token's `1e6` (one whole token)
+///      meters as `1e6` against the same caps. Unknown or unmeterable calldata is rejected.
 contract BoundWallet is IAIAgentAuthenticatedWallet {
     error PolicyExpired(bytes32 policyHash, uint256 validUntil);
     error ValueExceedsLimit(uint256 value, uint256 maxValue);
     error InvalidSignature(address recovered, address expected);
     error PolicyViolation(bytes32 policyHash, string reason);
+
+    /// @dev IERC20.transfer(address,uint256)
+    bytes4 private constant _TRANSFER_SELECTOR = 0xa9059cbb;
+    /// @dev IERC20.transferFrom(address,address,uint256)
+    bytes4 private constant _TRANSFER_FROM_SELECTOR = 0x23b872dd;
 
     bytes32 public constant AGENT_ACTION_TYPEHASH = keccak256(
         "AgentAction(address agent,string action,address target,uint256 value,bytes data,uint256 nonce,uint256 validUntil,bytes32 policyHash,bytes32 entropyCommitment)"
@@ -180,23 +192,28 @@ contract BoundWallet is IAIAgentAuthenticatedWallet {
             revert PolicyViolation(policyHash, "action not allowed");
         }
 
-        // 7. value <= maxValuePerTx
-        if (value > policy.maxValuePerTx) {
-            revert ValueExceedsLimit(value, policy.maxValuePerTx);
+        // 7–8. Meter native `value` plus ERC-20 transfer/transferFrom amounts (raw token units).
+        //      Empty `data` is a native transfer. Non-empty `data` must be meterable ERC-20
+        //      transfer/transferFrom; the inner recipient must be allowlisted.
+        uint256 metered = _meteredAmount(policyHash, value, data);
+        if (metered > policy.maxValuePerTx) {
+            revert ValueExceedsLimit(metered, policy.maxValuePerTx);
         }
 
-        // 8. If maxValuePerDay > 0, daily spend + value <= maxValuePerDay
         uint256 day = block.timestamp / 1 days;
         if (policy.maxValuePerDay > 0) {
-            uint256 newSpend = spentOnDay[policyHash][day] + value;
+            uint256 newSpend = spentOnDay[policyHash][day] + metered;
             if (newSpend > policy.maxValuePerDay) {
-                revert ValueExceedsLimit(value, policy.maxValuePerDay);
+                revert ValueExceedsLimit(metered, policy.maxValuePerDay);
             }
             spentOnDay[policyHash][day] = newSpend;
         }
 
-        // 9. MockRiskOracle.getLatestRiskScore(agentId) <= minVerificationScore
-        //    Reject if score EXCEEDS threshold (lower score = lower risk).
+        // 9. MockRiskOracle: fail closed if no score is recorded.
+        //    Then reject if score EXCEEDS threshold (lower score = lower risk).
+        if (!riskOracle.hasScore(policy.agentId)) {
+            revert PolicyViolation(policyHash, "risk score unset");
+        }
         uint8 score = riskOracle.getLatestRiskScore(policy.agentId);
         if (score > policy.minVerificationScore) {
             revert PolicyViolation(policyHash, "risk score exceeds threshold");
@@ -205,8 +222,9 @@ contract BoundWallet is IAIAgentAuthenticatedWallet {
         nonceUsed[policyHash][nonce] = true;
 
         // 10. Execute call, append hash-chained audit (previousHash), emit events
-        (bool ok,) = target.call{value: value}(data);
+        (bool ok, bytes memory ret) = target.call{value: value}(data);
         if (!ok) revert PolicyViolation(policyHash, "execution failed");
+        _requireErc20Success(policyHash, data, ret);
 
         auditEntryId = _appendAudit(policyHash, policy.agent, target, value, nonce, entropyCommitment, action);
         emit ActionExecuted(policyHash, policy.agent, target, value, auditEntryId);
@@ -240,6 +258,58 @@ contract BoundWallet is IAIAgentAuthenticatedWallet {
     {
         AuditEntry storage entry = _auditEntries[entryId];
         return (entry.previousHash, entry.entropyCommitment, entry.sequence, entry.sessionId);
+    }
+
+    /// @dev Native `value` plus ERC-20 `transfer`/`transferFrom` amount. Empty calldata is native-only.
+    function _meteredAmount(bytes32 policyHash, uint256 value, bytes calldata data)
+        private
+        view
+        returns (uint256 metered)
+    {
+        metered = value;
+        if (data.length == 0) return metered;
+        metered += _tokenAmountFromCalldata(policyHash, data);
+    }
+
+    /// @dev Decode a standard ERC-20 transfer/transferFrom. Rejects any other or non-canonical encoding.
+    function _tokenAmountFromCalldata(bytes32 policyHash, bytes calldata data) private view returns (uint256 amount) {
+        if (data.length < 4) revert PolicyViolation(policyHash, "unmeterable calldata");
+        bytes4 selector = bytes4(data[:4]);
+        if (selector == _TRANSFER_SELECTOR) {
+            if (data.length != 68) revert PolicyViolation(policyHash, "unmeterable calldata");
+            address to;
+            (to, amount) = abi.decode(data[4:], (address, uint256));
+            _requireRecipientAllowlisted(policyHash, to);
+            return amount;
+        }
+        if (selector == _TRANSFER_FROM_SELECTOR) {
+            if (data.length != 100) revert PolicyViolation(policyHash, "unmeterable calldata");
+            address to;
+            (, to, amount) = abi.decode(data[4:], (address, address, uint256));
+            _requireRecipientAllowlisted(policyHash, to);
+            return amount;
+        }
+        revert PolicyViolation(policyHash, "unmeterable calldata");
+    }
+
+    function _requireRecipientAllowlisted(bytes32 policyHash, address to) private view {
+        if (isBlockedContract[policyHash][to]) {
+            revert PolicyViolation(policyHash, "blocked contract");
+        }
+        if (!isAllowedContract[policyHash][to]) {
+            revert PolicyViolation(policyHash, "recipient not allowlisted");
+        }
+    }
+
+    /// @dev Empty returndata is treated as success (USDT-style). A 32-byte `false` is a failed transfer.
+    function _requireErc20Success(bytes32 policyHash, bytes calldata data, bytes memory ret) private pure {
+        if (data.length < 4) return;
+        bytes4 selector = bytes4(data[:4]);
+        if (selector != _TRANSFER_SELECTOR && selector != _TRANSFER_FROM_SELECTOR) return;
+        if (ret.length == 0) return;
+        if (ret.length != 32 || !abi.decode(ret, (bool))) {
+            revert PolicyViolation(policyHash, "execution failed");
+        }
     }
 
     function _recoverAgent(
@@ -324,6 +394,10 @@ contract BoundWallet is IAIAgentAuthenticatedWallet {
         }
         if (v < 27) v += 27;
         if (v != 27 && v != 28) return address(0);
+        // EIP-2: reject high-s signatures (malleability).
+        if (uint256(s) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) {
+            return address(0);
+        }
         return ecrecover(digest, v, r, s);
     }
 }

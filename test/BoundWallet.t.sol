@@ -96,12 +96,13 @@ contract BoundWalletTest is Test {
         assertEq(recipient.balance, ethAmount);
         assertEq(address(wallet).balance, 10 ether - ethAmount);
 
-        bytes memory erc20Data = abi.encodeWithSelector(MockERC20.transfer.selector, recipient, 25 ether);
+        bytes memory erc20Data = abi.encodeWithSelector(MockERC20.transfer.selector, recipient, 0.25 ether);
         (bool okToken, bytes32 tokenAudit) = _execute(policyHash, address(token), 0, erc20Data, 2, "transfer", agentPk);
         assertTrue(okToken);
         assertTrue(tokenAudit != bytes32(0));
-        assertEq(token.balanceOf(recipient), 25 ether);
-        assertEq(token.balanceOf(address(wallet)), 975 ether);
+        assertEq(token.balanceOf(recipient), 0.25 ether);
+        assertEq(token.balanceOf(address(wallet)), 999.75 ether);
+        assertEq(wallet.spentOnDay(policyHash, block.timestamp / 1 days), ethAmount + 0.25 ether);
 
         (bytes32 prev, bytes32 storedEntropy, uint256 seq,) = wallet.getAuditEntry(auditId);
         assertEq(prev, bytes32(0));
@@ -287,6 +288,121 @@ contract BoundWalletTest is Test {
         );
     }
 
+    function test_executeAction_revertsErc20OverMaxValuePerTx() public {
+        bytes32 policyHash = _register(1 ether, 5 ether, validAfter, validUntil, _addrs(recipient, address(token)));
+        bytes memory erc20Data = abi.encodeWithSelector(MockERC20.transfer.selector, recipient, 1 ether + 1);
+        _expectRevertExecute(
+            abi.encodeWithSelector(BoundWallet.ValueExceedsLimit.selector, 1 ether + 1, 1 ether),
+            policyHash,
+            address(token),
+            0,
+            erc20Data,
+            1,
+            "transfer",
+            agentPk
+        );
+        assertEq(token.balanceOf(recipient), 0);
+    }
+
+    function test_executeAction_revertsErc20DailyCap() public {
+        bytes32 policyHash = _register(10 ether, 1.5 ether, validAfter, validUntil, _addrs(recipient, address(token)));
+        (bool ok,) = _execute(policyHash, recipient, 1 ether, bytes(""), 1, "transfer", agentPk);
+        assertTrue(ok);
+
+        bytes memory erc20Data = abi.encodeWithSelector(MockERC20.transfer.selector, recipient, 1 ether);
+        _expectRevertExecute(
+            abi.encodeWithSelector(BoundWallet.ValueExceedsLimit.selector, 1 ether, 1.5 ether),
+            policyHash,
+            address(token),
+            0,
+            erc20Data,
+            2,
+            "transfer",
+            agentPk
+        );
+        assertEq(wallet.spentOnDay(policyHash, block.timestamp / 1 days), 1 ether);
+    }
+
+    function test_executeAction_erc20AndNativeShareTheSameMeters() public {
+        bytes32 policyHash = _register(1 ether, 2 ether, validAfter, validUntil, _addrs(recipient, address(token)));
+        (bool okEth,) = _execute(policyHash, recipient, 0.4 ether, bytes(""), 1, "transfer", agentPk);
+        assertTrue(okEth);
+
+        bytes memory erc20Data = abi.encodeWithSelector(MockERC20.transfer.selector, recipient, 0.5 ether);
+        (bool okToken,) = _execute(policyHash, address(token), 0, erc20Data, 2, "transfer", agentPk);
+        assertTrue(okToken);
+        assertEq(wallet.spentOnDay(policyHash, block.timestamp / 1 days), 0.9 ether);
+
+        bytes memory overData = abi.encodeWithSelector(MockERC20.transfer.selector, recipient, 0.7 ether);
+        _expectRevertExecute(
+            abi.encodeWithSelector(BoundWallet.ValueExceedsLimit.selector, 1.1 ether, 1 ether),
+            policyHash,
+            address(token),
+            0.4 ether,
+            overData,
+            3,
+            "transfer",
+            agentPk
+        );
+    }
+
+    function test_executeAction_revertsUnmeterableCalldata() public {
+        bytes32 policyHash = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient, address(token)));
+        bytes memory approveData = abi.encodeWithSelector(MockERC20.approve.selector, attacker, 100 ether);
+        _expectRevertExecute(
+            abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, policyHash, "unmeterable calldata"),
+            policyHash,
+            address(token),
+            0,
+            approveData,
+            1,
+            "transfer",
+            agentPk
+        );
+
+        bytes memory paddedTransfer =
+            bytes.concat(abi.encodeWithSelector(MockERC20.transfer.selector, recipient, 0.1 ether), bytes(hex"00"));
+        _expectRevertExecute(
+            abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, policyHash, "unmeterable calldata"),
+            policyHash,
+            address(token),
+            0,
+            paddedTransfer,
+            2,
+            "transfer",
+            agentPk
+        );
+    }
+
+    function test_executeAction_transferFromMetersAmount() public {
+        bytes32 policyHash = _register(1 ether, 2 ether, validAfter, validUntil, _addrs(recipient, address(token)));
+        token.mint(attacker, 10 ether);
+        vm.prank(attacker);
+        token.approve(address(wallet), 10 ether);
+
+        bytes memory data = abi.encodeWithSelector(MockERC20.transferFrom.selector, attacker, recipient, 0.3 ether);
+        (bool ok,) = _execute(policyHash, address(token), 0, data, 1, "transfer", agentPk);
+        assertTrue(ok);
+        assertEq(token.balanceOf(recipient), 0.3 ether);
+        assertEq(wallet.spentOnDay(policyHash, block.timestamp / 1 days), 0.3 ether);
+    }
+
+    function test_executeAction_revertsErc20RecipientNotAllowlisted() public {
+        bytes32 policyHash = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient, address(token)));
+        bytes memory erc20Data = abi.encodeWithSelector(MockERC20.transfer.selector, attacker, 0.1 ether);
+        _expectRevertExecute(
+            abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, policyHash, "recipient not allowlisted"),
+            policyHash,
+            address(token),
+            0,
+            erc20Data,
+            1,
+            "transfer",
+            agentPk
+        );
+        assertEq(token.balanceOf(attacker), 0);
+    }
+
     function test_auditChain_linksPreviousHash() public {
         bytes32 policyHash = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient));
 
@@ -308,6 +424,143 @@ contract BoundWalletTest is Test {
         assertEq(entropy2, ENTROPY);
         assertEq(wallet.lastAuditHash(), id2);
         assertEq(wallet.auditSequence(), 2);
+    }
+
+    function test_registerPolicy_revertsNotOwner() public {
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, bytes32(0), "not owner"));
+        wallet.registerPolicy(
+            agent,
+            AGENT_ID,
+            _actions("transfer"),
+            _addrs(recipient),
+            new address[](0),
+            1 ether,
+            0,
+            validAfter,
+            validUntil,
+            MIN_SCORE
+        );
+    }
+
+    function test_revokePolicy_revertsNotOwner() public {
+        bytes32 policyHash = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient));
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, policyHash, "not owner"));
+        wallet.revokePolicy(policyHash, "nope");
+    }
+
+    function test_revokePolicy_revertsAlreadyInactive() public {
+        bytes32 policyHash = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient));
+        vm.prank(owner);
+        wallet.revokePolicy(policyHash, "first");
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, policyHash, "policy inactive"));
+        wallet.revokePolicy(policyHash, "second");
+    }
+
+    function test_revokePolicy_revertsNotFound() public {
+        vm.prank(owner);
+        vm.expectRevert(
+            abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, bytes32(uint256(1)), "policy not found")
+        );
+        wallet.revokePolicy(bytes32(uint256(1)), "missing");
+    }
+
+    function test_executeAction_revertsPolicyNotFound() public {
+        bytes32 missing = bytes32(uint256(42));
+        vm.expectRevert(abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, missing, "policy not found"));
+        wallet.executeAction(missing, recipient, 0.1 ether, bytes(""), 1, ENTROPY, hex"00", "transfer");
+    }
+
+    function test_executeAction_revertsEmptySignature() public {
+        bytes32 policyHash = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient));
+        vm.expectRevert(abi.encodeWithSelector(BoundWallet.InvalidSignature.selector, address(0), agent));
+        wallet.executeAction(policyHash, recipient, 0.1 ether, bytes(""), 1, ENTROPY, bytes(""), "transfer");
+    }
+
+    function test_executeAction_revertsExecutionFailed() public {
+        bytes32 policyHash = _register(20 ether, 0, validAfter, validUntil, _addrs(recipient));
+        _expectRevertExecute(
+            abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, policyHash, "execution failed"),
+            policyHash,
+            recipient,
+            11 ether,
+            bytes(""),
+            1,
+            "transfer",
+            agentPk
+        );
+    }
+
+    function test_executeAction_revertsUnsetRiskScore() public {
+        bytes32 policyHash;
+        vm.prank(owner);
+        policyHash = wallet.registerPolicy(
+            agent,
+            99,
+            _actions("transfer"),
+            _addrs(recipient),
+            new address[](0),
+            1 ether,
+            0,
+            validAfter,
+            validUntil,
+            MIN_SCORE
+        );
+        _expectRevertExecute(
+            abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, policyHash, "risk score unset"),
+            policyHash,
+            recipient,
+            0.1 ether,
+            bytes(""),
+            1,
+            "transfer",
+            agentPk
+        );
+    }
+
+    function test_executeAction_explicitZeroScoreStillPasses() public {
+        oracle.setScore(AGENT_ID, 0);
+        bytes32 policyHash = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient));
+        (bool ok,) = _execute(policyHash, recipient, 0.1 ether, bytes(""), 1, "transfer", agentPk);
+        assertTrue(ok);
+        assertEq(recipient.balance, 0.1 ether);
+    }
+
+    function test_oracle_setScore_revertsNotOwner() public {
+        vm.prank(attacker);
+        vm.expectRevert(MockRiskOracle.NotOwner.selector);
+        oracle.setScore(AGENT_ID, 40);
+        assertEq(oracle.getLatestRiskScore(AGENT_ID), 5);
+    }
+
+    function test_executeAction_revertsFalseReturningErc20() public {
+        FalseReturningERC20 bad = new FalseReturningERC20();
+        bad.mint(address(wallet), 100 ether);
+        bytes32 policyHash = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient, address(bad)));
+        bytes memory erc20Data = abi.encodeWithSelector(FalseReturningERC20.transfer.selector, recipient, 0.1 ether);
+        _expectRevertExecute(
+            abi.encodeWithSelector(BoundWallet.PolicyViolation.selector, policyHash, "execution failed"),
+            policyHash,
+            address(bad),
+            0,
+            erc20Data,
+            1,
+            "transfer",
+            agentPk
+        );
+        assertEq(bad.balanceOf(recipient), 0);
+    }
+
+    function test_executeAction_emptyReturningErc20Succeeds() public {
+        EmptyReturningERC20 silent = new EmptyReturningERC20();
+        silent.mint(address(wallet), 100 ether);
+        bytes32 policyHash = _register(1 ether, 0, validAfter, validUntil, _addrs(recipient, address(silent)));
+        bytes memory erc20Data = abi.encodeWithSelector(EmptyReturningERC20.transfer.selector, recipient, 0.1 ether);
+        (bool ok,) = _execute(policyHash, address(silent), 0, erc20Data, 1, "transfer", agentPk);
+        assertTrue(ok);
+        assertEq(silent.balanceOf(recipient), 0.1 ether);
     }
 
     function _register(uint256 maxTx, uint256 maxDay, uint256 afterTs, uint256 untilTs, address[] memory allowed)
@@ -406,5 +659,33 @@ contract BoundWalletTest is Test {
         list = new address[](2);
         list[0] = a;
         list[1] = b;
+    }
+}
+
+/// @dev ERC-20 that returns `false` instead of reverting — must not count as success.
+contract FalseReturningERC20 {
+    mapping(address => uint256) public balanceOf;
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function transfer(address, uint256) external pure returns (bool) {
+        return false;
+    }
+}
+
+/// @dev USDT-style token: succeeds and returns no data.
+contract EmptyReturningERC20 {
+    mapping(address => uint256) public balanceOf;
+
+    function mint(address to, uint256 amount) external {
+        balanceOf[to] += amount;
+    }
+
+    function transfer(address to, uint256 amount) external {
+        require(balanceOf[msg.sender] >= amount, "balance");
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
     }
 }

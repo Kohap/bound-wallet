@@ -6,6 +6,8 @@ pragma solidity ^0.8.20;
 /// @dev SPEC GAP: published `executeAction` omits `string action`, but EIP-712 `AgentAction`
 ///      requires it. Bound Wallet adds `action` as a trailing argument, hashes it into the
 ///      typed data, and reverts `PolicyViolation` if it is not in `allowedActions`.
+///      Non-empty `data` must be meterable ERC-20 `transfer`/`transferFrom` (raw token units,
+///      18-decimal assumption; see BoundWallet NatSpec).
 interface IAIAgentAuthenticatedWallet {
     event PolicyRegistered(
         bytes32 indexed policyHash, address indexed owner, address indexed agent, uint256 validUntil

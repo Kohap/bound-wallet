@@ -6,7 +6,7 @@ export function shortHash(value: string, head = 6, tail = 4): string {
 }
 
 export function policyLabel(policyHash: string): string {
-  return `Bound policy ${shortHash(policyHash)}`;
+  return `policyHash ${shortHash(policyHash)}`;
 }
 
 export function formatEth(value: bigint): string {
@@ -66,7 +66,9 @@ export function riskBadge(score: number, threshold: number): { label: string; to
 
 export function actionInEnglish(action: string): string {
   const key = action.trim().toLowerCase();
-  if (key === "transfer") return "Transfer native ETH";
+  if (key === "transfer") {
+    return "Transfer (native ETH via value, and/or ERC-20 transfer/transferFrom in data)";
+  }
   if (key === "swap") return "Swap (not enabled unless listed in the policy)";
   return action.trim() || "Untitled action";
 }
