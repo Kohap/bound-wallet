@@ -18,6 +18,7 @@ script/Deploy.s.sol
 script/deploy-anvil.sh
 ui/          ← Vite + React + viem permission desk
 agent-os/TRACK-A-MCP-HUB.md  ← Agent OS camera fallback (assign→act→revoke)
+TRUST.md     ← Track A trust: mock 8126, entropy stub, MCP vs chain, Anvil, no ERC-8004
 README.md
 ```
 
@@ -27,7 +28,11 @@ Published `IAIAgentAuthenticatedWallet.executeAction` omits `string action`, but
 
 Bound Wallet **adds `string action` as a trailing argument** to `executeAction`, hashes it into the typed data, and reverts `PolicyViolation` if it is not in `allowedActions`.
 
-`transfer` maps to native ETH (`target.call{value: value}("")`) and/or an ERC-20 `transfer` encoded in `data`.
+`transfer` maps to native ETH (`target.call{value: value}("")`) and/or an ERC-20 `transfer` / `transferFrom` encoded in `data`.
+
+**ERC-20 metering:** if `data` is non-empty, it must be a canonical ABI-encoded `transfer(address,uint256)` or `transferFrom(address,address,uint256)`. The decoded token `amount` is added to native `value` and checked against the same `maxValuePerTx` / `maxValuePerDay`. Amounts are **raw token units with no decimal conversion** (1:1 with wei only for 18-decimal tokens such as `MockERC20`). Unknown or padded calldata is rejected. The inner ERC-20 recipient must be allowlisted.
+
+See [TRUST.md](TRUST.md) for Track A trust boundaries (mock IERC-8126, entropy stub, Agent OS MCP off-chain vs Bound Wallet on-chain, Anvil-only, no ERC-8004 Final/production claim).
 
 ## Entropy
 
@@ -51,7 +56,7 @@ Requires [Foundry](https://book.getfoundry.sh/getting-started/installation). `fo
 forge test
 ```
 
-Hour-1 suite: 14 tests. Keep them green when changing anything except `ui/`.
+Hour-1 suite plus ERC-20 metering regressions (**20 tests**). Keep them green when changing anything except `ui/`.
 
 ## Permission UI
 
@@ -191,6 +196,8 @@ cast call $WALLET "getPolicy(bytes32)(address,address,uint256,uint256,bool)" $PO
 ## Out of scope
 
 Discord/Telegram, **live** CEX / Agent OS MCP wiring, real ERC-8126 / ERC-8004, ERC-4337 bundler, entropy reveal, trading, mainnet or public testnet deploy. Agent OS assign/revoke on camera is documented in `agent-os/TRACK-A-MCP-HUB.md` as a fallback only.
+
+This is **not** ERC-8004 Final and **not** a production Agent OS integration. Trust boundaries: [TRUST.md](TRUST.md).
 
 ## License
 

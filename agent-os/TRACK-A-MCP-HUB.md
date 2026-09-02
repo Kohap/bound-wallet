@@ -14,7 +14,7 @@ Show a judge, in one continuous take:
 4. An **out-of-policy** act reverts.
 5. The owner **revokes** (Bound Wallet `revokePolicy`, optional Binance revoke on camera).
 
-The agent never holds the owner key. Bound Wallet is the execute layer; Agent OS is the assignment surface we only *show*.
+The Track A story is: show assignment on Agent OS, **bind the same idea on-chain** as an ERC-8196 policy, act in-policy, revert out-of-policy, owner `revokePolicy`. Agent OS and Bound Wallet are **two permission planes**. Only the on-chain plane stops `executeAction`. See [TRUST.md](../TRUST.md).
 
 ## What is real vs fallback
 

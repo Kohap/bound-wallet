@@ -81,6 +81,10 @@ function plainViolation(reason: string): string {
       return "Only the owner can register or revoke a policy. The agent cannot.";
     case "execution failed":
       return "The inner call failed (for example the vault has too little ETH).";
+    case "unmeterable calldata":
+      return "Calldata is not a standard ERC-20 transfer or transferFrom, so the wallet cannot meter it.";
+    case "recipient not allowlisted":
+      return "The ERC-20 recipient is not on the allowed list for this policy.";
     default:
       return `The policy blocked this action (${reason}).`;
   }
