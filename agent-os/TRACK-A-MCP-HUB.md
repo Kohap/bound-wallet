@@ -48,7 +48,7 @@ Record 1080p. Hold each card 3–5 seconds. Narrate in plain language — no hex
 
 - Simulate agent: `0.1` ETH, allowlisted recipient.
 - Activity log: sequence 1, genesis previous hash.
-- Optional: **Reveal last entropy** (audit check, not a TEE).
+- Optional: **Reveal last entropy** (audit check, not a TEE). Refresh keeps the last unrevealed secret and the next unused nonce.
 - Narrate: “In policy. Under the cap.”
 
 ### 4. Out-of-policy revert

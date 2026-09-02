@@ -19,6 +19,7 @@ script/deploy-anvil.sh
 ui/          ← Vite + React + viem permission desk
 agent-os/TRACK-A-MCP-HUB.md  ← Agent OS camera fallback (assign→bind→act→revoke)
 TRUST.md     ← Track A trust: mock 8126, entropy audit-reveal, MCP vs chain, Anvil, no ERC-8004
+agent-os/SUBMISSION.md  ← contest kit: tweet, video shots, honesty table
 README.md
 ```
 
@@ -91,6 +92,12 @@ Dual-plane desk: [agent-os/TRACK-A-MCP-HUB.md](agent-os/TRACK-A-MCP-HUB.md). No 
 4. **Out-of-policy revert** — Amount `2` ETH. Wallet reverts; nonce is not consumed.
 5. **Optional MOCK** — Asset MockERC20, amount `0.1`, same recipient (only if the bound grant allowlisted the token).
 6. **Revoke** — Owner **Revoke on-chain (Agent OS unchanged)** or **Panic revoke-all**. Banner: *Agent OS still assigned. Policy revoked. Spend is dead.* Do not treat Agent OS revoke as `revokePolicy`.
+
+## Contest (Track A)
+
+Deadline **8 September 2026 23:59 UTC**. Product is demo-ready on Anvil. You still: follow @Binance, repost, record the 3-minute take, reply with GitHub + video, complete the survey.
+
+Kit: [agent-os/SUBMISSION.md](agent-os/SUBMISSION.md). Shot list: [agent-os/TRACK-A-MCP-HUB.md](agent-os/TRACK-A-MCP-HUB.md). Trust: [TRUST.md](TRUST.md).
 
 ## Cast demo (hour 1, still valid)
 

@@ -13,6 +13,7 @@ import {
   parseEventLogs,
   toHex,
   zeroAddress,
+  formatEther,
 } from "viem";
 import { foundry } from "viem/chains";
 import { agentActionTypes, boundWalletAbi, eip712Domain, mockErc20Abi, mockRiskOracleAbi } from "./lib/abi";
@@ -93,9 +94,35 @@ type ActivityRow = {
 type Flash = { tone: "ok" | "bad" | "mute"; text: string } | null;
 
 const STORAGE_KEY = "bound-wallet-hour2";
+const ENTROPY_KEY = "bound-wallet-pending-entropy";
+
+type DraftsByHash = Record<string, PolicyDraft>;
+
+type StoredEntropy = {
+  secret: Hex;
+  commitment: Hex;
+  entryId: Hex;
+  wallet: Address;
+};
 
 function rpcUrl(): string {
   return import.meta.env.VITE_RPC_URL || "/rpc";
+}
+
+async function nextUnusedNonce(wallet: Address, policyHash: Hex, start = 1n): Promise<bigint> {
+  const client = publicClient();
+  let n = start < 1n ? 1n : start;
+  for (let i = 0; i < 64; i++) {
+    const used = await client.readContract({
+      address: wallet,
+      abi: boundWalletAbi,
+      functionName: "nonceUsed",
+      args: [policyHash, n],
+    });
+    if (!used) return n;
+    n += 1n;
+  }
+  return n;
 }
 
 function envContracts(): Partial<Contracts> {
@@ -186,12 +213,20 @@ export default function App() {
   const [pendingEntropy, setPendingEntropy] = useState<{ secret: Hex; commitment: Hex; entryId: Hex } | null>(
     null,
   );
+  const [draftsByHash, setDraftsByHash] = useState<DraftsByHash>({});
 
   const loadSaved = useCallback(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
-      const parsed = JSON.parse(raw) as { bound?: BoundPolicy; contracts?: Contracts };
+      const parsed = JSON.parse(raw) as {
+        bound?: BoundPolicy;
+        contracts?: Contracts;
+        draftsByHash?: DraftsByHash;
+      };
+      if (parsed.draftsByHash && typeof parsed.draftsByHash === "object") {
+        setDraftsByHash(parsed.draftsByHash);
+      }
       if (
         parsed.bound?.policyHash &&
         typeof parsed.bound.policyHash === "string" &&
@@ -221,6 +256,26 @@ export default function App() {
     } catch {
       /* ignore */
     }
+    try {
+      const raw = localStorage.getItem(ENTROPY_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as StoredEntropy;
+      if (
+        parsed?.secret &&
+        parsed.commitment &&
+        parsed.entryId &&
+        /^0x[0-9a-fA-F]{64}$/.test(parsed.secret) &&
+        /^0x[0-9a-fA-F]{64}$/.test(parsed.entryId)
+      ) {
+        setPendingEntropy({
+          secret: parsed.secret,
+          commitment: parsed.commitment,
+          entryId: parsed.entryId,
+        });
+      }
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   useEffect(() => {
@@ -229,11 +284,11 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ bound, contracts }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ bound, contracts, draftsByHash }));
     } catch {
       /* ignore quota / private mode */
     }
-  }, [bound, contracts]);
+  }, [bound, contracts, draftsByHash]);
 
   useEffect(() => {
     try {
@@ -242,6 +297,19 @@ export default function App() {
       /* ignore quota */
     }
   }, [osPlane]);
+
+  useEffect(() => {
+    try {
+      if (!pendingEntropy || !contracts) {
+        if (!pendingEntropy) localStorage.removeItem(ENTROPY_KEY);
+        return;
+      }
+      const stored: StoredEntropy = { ...pendingEntropy, wallet: contracts.wallet };
+      localStorage.setItem(ENTROPY_KEY, JSON.stringify(stored));
+    } catch {
+      /* ignore quota */
+    }
+  }, [pendingEntropy, contracts]);
 
   const pingAnvil = useCallback(async () => {
     try {
@@ -317,13 +385,6 @@ export default function App() {
       setChainPolicies(listed);
 
       if (bound) {
-        const spent = await client.readContract({
-          address: contracts.wallet,
-          abi: boundWalletAbi,
-          functionName: "spentOnDay",
-          args: [bound.policyHash, dayBucket(block.timestamp)],
-        });
-        setSpentToday(spent);
         const match = listed.find(
           (p) => p.policyHash.toLowerCase() === bound.policyHash.toLowerCase(),
         );
@@ -332,6 +393,22 @@ export default function App() {
             if (!prev || prev.isActive === match.isActive) return prev;
             return { ...prev, isActive: match.isActive };
           });
+          const spent = await client.readContract({
+            address: contracts.wallet,
+            abi: boundWalletAbi,
+            functionName: "spentOnDay",
+            args: [bound.policyHash, dayBucket(block.timestamp)],
+          });
+          setSpentToday(spent);
+          try {
+            const next = await nextUnusedNonce(contracts.wallet, bound.policyHash, 1n);
+            setNonce(String(next));
+          } catch {
+            /* keep typed nonce */
+          }
+        } else {
+          setBound(null);
+          setSpentToday(0n);
         }
       }
     } catch {
@@ -407,6 +484,12 @@ export default function App() {
       }
       rows.sort((a, b) => Number(a.sequence - b.sequence));
       setActivity(rows);
+      setPendingEntropy((prev) => {
+        if (!prev) return prev;
+        const row = rows.find((r) => r.entryId.toLowerCase() === prev.entryId.toLowerCase());
+        if (row?.entropyRevealed) return null;
+        return prev;
+      });
     } catch {
       /* ignore */
     }
@@ -510,8 +593,12 @@ export default function App() {
       announce({ tone: "bad", text: "Paste valid Anvil contract addresses for the wallet, oracle, and token." });
       return;
     }
+    const nextWallet = getAddress(walletInput);
+    if (contracts && contracts.wallet.toLowerCase() !== nextWallet.toLowerCase()) {
+      setPendingEntropy(null);
+    }
     setContracts({
-      wallet: getAddress(walletInput),
+      wallet: nextWallet,
       oracle: getAddress(oracleInput),
       token: getAddress(tokenInput),
     });
@@ -598,6 +685,7 @@ export default function App() {
         throw new Error("getPolicy maxValuePerTx does not match the amount registered.");
       }
       setBound({ ...draft, policyHash: eventHash, isActive: onChain[4] });
+      setDraftsByHash((prev) => ({ ...prev, [eventHash.toLowerCase()]: { ...draft } }));
       setNonce("1");
       const extraActive = chainPolicies.filter((p) => p.isActive).length;
       announce({
@@ -782,12 +870,14 @@ export default function App() {
         },
       });
 
-      const hash = await ownerWallet().writeContract({
+      const { request } = await publicClient().simulateContract({
+        account: OWNER_ACCOUNT,
         address: contracts.wallet,
         abi: boundWalletAbi,
         functionName: "executeAction",
         args: [bound.policyHash, callTarget, value, data, nonceBn, commitment, signature, action],
       });
+      const hash = await ownerWallet().writeContract(request);
       const receipt = await publicClient().waitForTransactionReceipt({ hash });
       const executed = parseEventLogs({
         abi: boundWalletAbi,
@@ -810,6 +900,34 @@ export default function App() {
     } finally {
       setBusy(null);
     }
+  }
+
+  async function focusPolicy(p: ChainPolicy) {
+    const stored = draftsByHash[p.policyHash.toLowerCase()];
+    const fields: PolicyDraft = stored
+      ? stored
+      : {
+          ...defaultDraft(),
+          agent: p.agent,
+          maxValuePerTx: formatEther(p.maxValuePerTx),
+          validUntil: toDatetimeLocal(Number(p.validUntil)),
+        };
+    setDraft((prev) => ({ ...prev, ...fields }));
+    setBound({ ...fields, policyHash: p.policyHash, isActive: p.isActive });
+    if (contracts) {
+      try {
+        const n = await nextUnusedNonce(contracts.wallet, p.policyHash, 1n);
+        setNonce(String(n));
+      } catch {
+        setNonce("1");
+      }
+    }
+    announce({
+      tone: "mute",
+      text: stored
+        ? `Focused ${policyLabel(p.policyHash)}. Simulate and revoke apply to this hash.`
+        : `Focused ${policyLabel(p.policyHash)} from chain. Allowlist is not stored for this hash — re-bind if simulate needs it.`,
+    });
   }
 
   async function revealLastEntropy() {
@@ -1153,6 +1271,7 @@ export default function App() {
             remainingWei={remainingWei}
             spentToday={spentToday}
             tokenAddress={contracts?.token}
+            onFocus={(p) => void focusPolicy(p)}
           />
 
           {(bound || chainPolicies.some((p) => p.isActive)) && (
@@ -1400,6 +1519,7 @@ function PolicySeal({
   remainingWei,
   spentToday,
   tokenAddress,
+  onFocus,
 }: {
   bound: BoundPolicy | null;
   chain: ChainPolicy | null;
@@ -1407,6 +1527,7 @@ function PolicySeal({
   remainingWei: bigint | null;
   spentToday: bigint;
   tokenAddress?: Address;
+  onFocus: (p: ChainPolicy) => void;
 }) {
   const empty = (
     <section className="card">
@@ -1416,7 +1537,9 @@ function PolicySeal({
         <span className="text-cream">policyHash</span> from registerPolicy / getPolicy — the same
         bytes32, not a decorative nickname.
       </p>
-      {allPolicies.length > 0 && <PolicyHashList policies={allPolicies} focused={null} />}
+      {allPolicies.length > 0 && (
+        <PolicyHashList policies={allPolicies} focused={null} onFocus={onFocus} />
+      )}
     </section>
   );
 
@@ -1460,7 +1583,7 @@ function PolicySeal({
         This desk edits and simulates against the hash above. The contract may hold several active
         policies; each has its own policyHash and caps. Revoke does not cover the others.
       </p>
-      <PolicyHashList policies={allPolicies} focused={bound.policyHash} />
+      <PolicyHashList policies={allPolicies} focused={bound.policyHash} onFocus={onFocus} />
       <dl className="mt-4 grid gap-2 text-sm sm:grid-cols-2">
         <Row k="getPolicy agent" v={chain ? chain.agent : "—"} />
         <Row k="getPolicy owner" v={chain ? chain.owner : "—"} />
@@ -1484,9 +1607,11 @@ function PolicySeal({
 function PolicyHashList({
   policies,
   focused,
+  onFocus,
 }: {
   policies: ChainPolicy[];
   focused: Hex | null;
+  onFocus?: (p: ChainPolicy) => void;
 }) {
   if (policies.length === 0) return null;
   return (
@@ -1497,15 +1622,25 @@ function PolicyHashList({
           const isFocus = focused && p.policyHash.toLowerCase() === focused.toLowerCase();
           return (
             <li key={p.policyHash} className="font-mono break-all">
-              <span className={p.isActive ? "text-ok" : "text-mute"}>
-                {p.isActive ? "active" : "revoked"}
-              </span>
-              {" · "}
-              <span className="text-cream">{p.policyHash}</span>
-              {isFocus && <span className="ml-2 text-copper">focused</span>}
-              <span className="mt-0.5 block text-mute">
-                cap {formatEth(p.maxValuePerTx)} · expiry {formatWhen(p.validUntil)}
-              </span>
+              <button
+                type="button"
+                className="text-left disabled:cursor-default"
+                onClick={() => onFocus?.(p)}
+                disabled={!onFocus || Boolean(isFocus)}
+              >
+                <span className={p.isActive ? "text-ok" : "text-mute"}>
+                  {p.isActive ? "active" : "revoked"}
+                </span>
+                {" · "}
+                <span className="text-cream">{p.policyHash}</span>
+                {isFocus && <span className="ml-2 text-copper">focused</span>}
+                {!isFocus && onFocus && (
+                  <span className="ml-2 text-mute underline">focus</span>
+                )}
+                <span className="mt-0.5 block text-mute">
+                  cap {formatEth(p.maxValuePerTx)} · expiry {formatWhen(p.validUntil)}
+                </span>
+              </button>
             </li>
           );
         })}

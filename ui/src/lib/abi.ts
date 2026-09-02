@@ -128,6 +128,16 @@ export const boundWalletAbi = [
   },
   {
     type: "function",
+    name: "nonceUsed",
+    stateMutability: "view",
+    inputs: [
+      { name: "policyHash", type: "bytes32" },
+      { name: "nonce", type: "uint256" },
+    ],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
     name: "policyCount",
     stateMutability: "view",
     inputs: [],
