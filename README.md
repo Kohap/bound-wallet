@@ -214,3 +214,7 @@ This is **not** ERC-8004 Final and **not** a production Agent OS integration. Tr
 ## License
 
 Interface and contracts: [CC0-1.0](https://creativecommons.org/publicdomain/zero/1.0/), matching ERC-8196.
+
+## Continuity (ETHOnline)
+
+See [CONTINUITY.md](CONTINUITY.md) for pre-existing vs ETHOnline-new work.
